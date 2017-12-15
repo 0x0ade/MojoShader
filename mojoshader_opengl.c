@@ -1535,7 +1535,8 @@ MOJOSHADER_glShader *MOJOSHADER_glCompileShader(const unsigned char *tokenbuf,
                                                 const MOJOSHADER_swizzle *swiz,
                                                 const unsigned int swizcount,
                                                 const MOJOSHADER_samplerMap *smap,
-                                                const unsigned int smapcount)
+                                                const unsigned int smapcount,
+                                                const bool se)
 {
     MOJOSHADER_glShader *retval = NULL;
     GLuint shader = 0;
@@ -1545,6 +1546,7 @@ MOJOSHADER_glShader *MOJOSHADER_glCompileShader(const unsigned char *tokenbuf,
                                                       tokenbuf, bufsize,
                                                       swiz, swizcount,
                                                       smap, smapcount,
+                                                      se,
                                                       ctx->malloc_fn,
                                                       ctx->free_fn,
                                                       ctx->malloc_data);

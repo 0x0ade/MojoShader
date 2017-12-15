@@ -80,6 +80,7 @@ typedef struct Context
 {
     int isfail;
     int out_of_memory;
+    bool swap_endian;
     MOJOSHADER_malloc malloc;
     MOJOSHADER_free free;
     void *malloc_data;
@@ -115,6 +116,7 @@ typedef struct Context
     int endline_len;
     int profileid;
     const struct Profile *profile;
+    bool x360;
     MOJOSHADER_shaderType shader_type;
     uint8 major_ver;
     uint8 minor_ver;
@@ -427,6 +429,9 @@ static void failf(Context *ctx, const char *fmt, ...)
     // no filename at this level (we pass a NULL to errorlist_add_va()...)
     va_list ap;
     va_start(ap, fmt);
+    printf("Error: ");
+    vfprintf(stdout, fmt, ap);
+    printf("\n");
     errorlist_add_va(ctx->errors, NULL, ctx->current_position, fmt, ap);
     va_end(ap);
 } // failf
@@ -8607,7 +8612,7 @@ static int parse_destination_token(Context *ctx, DestArgInfo *info)
         return 0;
     } // if
 
-    const uint32 token = SWAP32(*(ctx->tokens));
+    const uint32 token = CTXSWAP32(*(ctx->tokens));
     const int reserved1 = (int) ((token >> 14) & 0x3); // bits 14 through 15
     const int reserved2 = (int) ((token >> 31) & 0x1); // bit 31
 
@@ -8845,7 +8850,7 @@ static int parse_source_token(Context *ctx, SourceArgInfo *info)
         return 0;
     } // if
 
-    const uint32 token = SWAP32(*(ctx->tokens));
+    const uint32 token = CTXSWAP32(*(ctx->tokens));
     const int reserved1 = (int) ((token >> 14) & 0x3); // bits 14 through 15
     const int reserved2 = (int) ((token >> 31) & 0x1); // bit 31
 
@@ -8911,7 +8916,7 @@ static int parse_source_token(Context *ctx, SourceArgInfo *info)
 
         else  // Shader Model 2 and later...
         {
-            const uint32 reltoken = SWAP32(*(ctx->tokens));
+            const uint32 reltoken = CTXSWAP32(*(ctx->tokens));
             // swallow token for now, for multiple calls in a row.
             adjust_token_position(ctx, 1);
 
@@ -9083,10 +9088,10 @@ static int parse_args_DEF(Context *ctx)
     if (ctx->dest_arg.relative)  // I'm pretty sure this is illegal...?
         fail(ctx, "relative addressing in DEF");
 
-    ctx->dwords[0] = SWAP32(ctx->tokens[0]);
-    ctx->dwords[1] = SWAP32(ctx->tokens[1]);
-    ctx->dwords[2] = SWAP32(ctx->tokens[2]);
-    ctx->dwords[3] = SWAP32(ctx->tokens[3]);
+    ctx->dwords[0] = CTXSWAP32(ctx->tokens[0]);
+    ctx->dwords[1] = CTXSWAP32(ctx->tokens[1]);
+    ctx->dwords[2] = CTXSWAP32(ctx->tokens[2]);
+    ctx->dwords[3] = CTXSWAP32(ctx->tokens[3]);
 
     return 6;
 } // parse_args_DEF
@@ -9100,10 +9105,10 @@ static int parse_args_DEFI(Context *ctx)
     if (ctx->dest_arg.relative)  // I'm pretty sure this is illegal...?
         fail(ctx, "relative addressing in DEFI");
 
-    ctx->dwords[0] = SWAP32(ctx->tokens[0]);
-    ctx->dwords[1] = SWAP32(ctx->tokens[1]);
-    ctx->dwords[2] = SWAP32(ctx->tokens[2]);
-    ctx->dwords[3] = SWAP32(ctx->tokens[3]);
+    ctx->dwords[0] = CTXSWAP32(ctx->tokens[0]);
+    ctx->dwords[1] = CTXSWAP32(ctx->tokens[1]);
+    ctx->dwords[2] = CTXSWAP32(ctx->tokens[2]);
+    ctx->dwords[3] = CTXSWAP32(ctx->tokens[3]);
 
     return 6;
 } // parse_args_DEFI
@@ -9141,7 +9146,7 @@ static int valid_texture_type(const uint32 ttype)
 static int parse_args_DCL(Context *ctx)
 {
     int unsupported = 0;
-    const uint32 token = SWAP32(*(ctx->tokens));
+    const uint32 token = CTXSWAP32(*(ctx->tokens));
     const int reserved1 = (int) ((token >> 31) & 0x1); // bit 31
     uint32 reserved_mask = 0x00000000;
 
@@ -10262,7 +10267,7 @@ static int parse_instruction_token(Context *ctx)
     const int start_position = ctx->current_position;
     const uint32 *start_tokens = ctx->tokens;
     const uint32 start_tokencount = ctx->tokencount;
-    const uint32 token = SWAP32(*(ctx->tokens));
+    const uint32 token = CTXSWAP32(*(ctx->tokens));
     const uint32 opcode = (token & 0xFFFF);
     const uint32 controls = ((token >> 16) & 0xFF);
     const uint32 insttoks = ((token >> 24) & 0x0F);
@@ -10284,6 +10289,8 @@ static int parse_instruction_token(Context *ctx)
         return insttoks + 1;  // pray that you resync later.
     } // if
 
+    printf("Instruction token: 0x%08X\n", token);
+    printf("Opcode: %s\n", instruction->opcode_string);
     ctx->coissue = coissue;
     if (coissue)
     {
@@ -10357,6 +10364,28 @@ static int parse_instruction_token(Context *ctx)
 } // parse_instruction_token
 
 
+static int parse_x360_junk(Context *ctx)
+{
+    // !!! FIXME: Has this ever appeared outside of XBOX 360 shaders? What does it actually do?
+    if (ctx->tokencount == 0)
+    {
+        return 0;
+    } // if
+
+    const uint32 token = CTXSWAP32(*(ctx->tokens));
+
+    if ((token & 0xFFFFFFFE) != 0x102A1100)
+    {
+        ctx->x360 = 0;
+        return 0;
+    } // if
+
+    ctx->x360 = 1;
+
+    return 1 /* parsed one token */ + 11 /* Extra junk - always the same size? */;
+} // parse_x360_junk
+
+
 static int parse_version_token(Context *ctx, const char *profilestr)
 {
     if (ctx->tokencount == 0)
@@ -10365,7 +10394,7 @@ static int parse_version_token(Context *ctx, const char *profilestr)
         return 0;
     } // if
 
-    const uint32 token = SWAP32(*(ctx->tokens));
+    const uint32 token = CTXSWAP32(*(ctx->tokens));
     const uint32 shadertype = ((token >> 16) & 0xFFFF);
     const uint8 major = (uint8) ((token >> 8) & 0xFF);
     const uint8 minor = (uint8) (token & 0xFF);
@@ -10435,11 +10464,11 @@ static int parse_ctab_typeinfo(Context *ctx, const uint8 *start,
 
     const uint16 *typeptr = (const uint16 *) (start + pos);
 
-    info->parameter_class = (MOJOSHADER_symbolClass) SWAP16(typeptr[0]);
-    info->parameter_type = (MOJOSHADER_symbolType) SWAP16(typeptr[1]);
-    info->rows = (unsigned int) SWAP16(typeptr[2]);
-    info->columns = (unsigned int) SWAP16(typeptr[3]);
-    info->elements = (unsigned int) SWAP16(typeptr[4]);
+    info->parameter_class = (MOJOSHADER_symbolClass) CTXSWAP16(typeptr[0]);
+    info->parameter_type = (MOJOSHADER_symbolType) CTXSWAP16(typeptr[1]);
+    info->rows = (unsigned int) CTXSWAP16(typeptr[2]);
+    info->columns = (unsigned int) CTXSWAP16(typeptr[3]);
+    info->elements = (unsigned int) CTXSWAP16(typeptr[4]);
 
     if (info->parameter_class >= MOJOSHADER_SYMCLASS_TOTAL)
     {
@@ -10453,7 +10482,7 @@ static int parse_ctab_typeinfo(Context *ctx, const uint8 *start,
         info->parameter_type = MOJOSHADER_SYMTYPE_INT;
     } // if
 
-    const unsigned int member_count = (unsigned int) SWAP16(typeptr[5]);
+    const unsigned int member_count = (unsigned int) CTXSWAP16(typeptr[5]);
     info->member_count = 0;
     info->members = NULL;
 
@@ -10481,8 +10510,8 @@ static int parse_ctab_typeinfo(Context *ctx, const uint8 *start,
     for (i = 0; i < member_count; i++)
     {
         MOJOSHADER_symbolStructMember *mbr = &info->members[i];
-        const uint32 name = SWAP32(member[0]);
-        const uint32 memberinfopos = SWAP32(member[1]);
+        const uint32 name = CTXSWAP32(member[0]);
+        const uint32 memberinfopos = CTXSWAP32(member[1]);
         member += 2;
 
         if (!parse_ctab_string(start, bytes, name))
@@ -10510,7 +10539,7 @@ static void parse_constant_table(Context *ctx, const uint32 *tokens,
                                  const uint32 bytes, const uint32 okay_version,
                                  const int setvariables, CtabData *ctab)
 {
-    const uint32 id = SWAP32(tokens[1]);
+    const uint32 id = CTXSWAP32(tokens[1]);
     if (id != CTAB_ID)
         return;  // not the constant table.
 
@@ -10530,12 +10559,12 @@ static void parse_constant_table(Context *ctx, const uint32 *tokens,
         return;
     } // if
 
-    const uint32 size = SWAP32(tokens[2]);
-    const uint32 creator = SWAP32(tokens[3]);
-    const uint32 version = SWAP32(tokens[4]);
-    const uint32 constants = SWAP32(tokens[5]);
-    const uint32 constantinfo = SWAP32(tokens[6]);
-    const uint32 target = SWAP32(tokens[8]);
+    const uint32 size = CTXSWAP32(tokens[2]);
+    const uint32 creator = CTXSWAP32(tokens[3]);
+    const uint32 version = CTXSWAP32(tokens[4]);
+    const uint32 constants = CTXSWAP32(tokens[5]);
+    const uint32 constantinfo = CTXSWAP32(tokens[6]);
+    const uint32 target = CTXSWAP32(tokens[8]);
 
     if (size != CTAB_SIZE)
         goto corrupt_ctab;
@@ -10564,12 +10593,12 @@ static void parse_constant_table(Context *ctx, const uint32 *tokens,
     for (i = 0; i < constants; i++)
     {
         const uint8 *ptr = start + constantinfo + (i * CINFO_SIZE);
-        const uint32 name = SWAP32(*((uint32 *) (ptr + 0)));
-        const uint16 regset = SWAP16(*((uint16 *) (ptr + 4)));
-        const uint16 regidx = SWAP16(*((uint16 *) (ptr + 6)));
-        const uint16 regcnt = SWAP16(*((uint16 *) (ptr + 8)));
-        const uint32 typeinf = SWAP32(*((uint32 *) (ptr + 12)));
-        const uint32 defval = SWAP32(*((uint32 *) (ptr + 16)));
+        const uint32 name = CTXSWAP32(*((uint32 *) (ptr + 0)));
+        const uint16 regset = CTXSWAP16(*((uint16 *) (ptr + 4)));
+        const uint16 regidx = CTXSWAP16(*((uint16 *) (ptr + 6)));
+        const uint16 regcnt = CTXSWAP16(*((uint16 *) (ptr + 8)));
+        const uint32 typeinf = CTXSWAP32(*((uint32 *) (ptr + 12)));
+        const uint32 defval = CTXSWAP32(*((uint32 *) (ptr + 16)));
         MOJOSHADER_uniformType mojotype = MOJOSHADER_UNIFORM_UNKNOWN;
 
         if (!parse_ctab_string(start, bytes, name)) goto corrupt_ctab;
@@ -10630,7 +10659,7 @@ static void free_symbols(MOJOSHADER_free f, void *d, MOJOSHADER_symbol *syms,
 
 static int is_comment_token(Context *ctx, const uint32 tok, uint32 *tokcount)
 {
-    const uint32 token = SWAP32(tok);
+    const uint32 token = CTXSWAP32(tok);
     if ((token & 0xFFFF) == 0xFFFE)  // actually a comment token?
     {
         if ((token & 0x80000000) != 0)
@@ -10679,7 +10708,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
     const uint32 version_magic = 0x46580000;
     const uint32 min_version = 0x00000200 | version_magic;
     const uint32 max_version = 0x00000201 | version_magic;
-    const uint32 version = SWAP32(tokens[0]);
+    const uint32 version = CTXSWAP32(tokens[0]);
     if (version < min_version || version > max_version)
     {
         fail(ctx, "Unsupported preshader version.");
@@ -10707,7 +10736,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
             // !!! FIXME:  sometimes followed by tokens that don't appear to
             // !!! FIXME:  have anything to do with the rest of the blob.
             // !!! FIXME: So for now, treat this as a special "EOS" comment.
-            if (SWAP32(*tokens) == 0xFFFF)
+            if (CTXSWAP32(*tokens) == 0xFFFF)
                 break;
 
             fail(ctx, "Bogus preshader data.");
@@ -10722,7 +10751,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
 
         if (subtokcount > 0)
         {
-            switch (SWAP32(*tokens))
+            switch (CTXSWAP32(*tokens))
             {
                 #define PRESHADER_BLOCK_CASE(id, var) \
                     case id##_ID: { \
@@ -10770,7 +10799,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
         fail(ctx, "Bogus CLIT block in preshader.");
     else
     {
-        const uint32 lit_count = SWAP32(clit.tokens[1]);
+        const uint32 lit_count = CTXSWAP32(clit.tokens[1]);
         if (lit_count > ((clit.tokcount - 2) / 2))
         {
             fail(ctx, "Bogus CLIT block in preshader.");
@@ -10786,7 +10815,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
                 return;  // oh well.
             const double *litptr = (const double *) (clit.tokens + 2);
             for (i = 0; i < lit_count; i++)
-                preshader->literals[i] = SWAPDBL(litptr[i]);
+                preshader->literals[i] = CTXSWAPDBL(litptr[i]);
         } // else if
     } // else
 
@@ -10801,12 +10830,12 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
             return;
         } // if
 
-        //const uint32 first_output_reg = SWAP32(prsi.tokens[1]);
+        //const uint32 first_output_reg = CTXSWAP32(prsi.tokens[1]);
         // !!! FIXME: there are a lot of fields here I don't know about.
         // !!! FIXME:  maybe [2] and [3] are for int4 and bool registers?
-        //const uint32 output_reg_count = SWAP32(prsi.tokens[4]);
+        //const uint32 output_reg_count = CTXSWAP32(prsi.tokens[4]);
         // !!! FIXME:  maybe [5] and [6] are for int4 and bool registers?
-        output_map_count = SWAP32(prsi.tokens[7]);
+        output_map_count = CTXSWAP32(prsi.tokens[7]);
 
         prsi.tokcount -= 8;
         prsi.tokens += 8;
@@ -10836,7 +10865,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
     } // if
 
     // The FXLC block has the actual instructions...
-    uint32 opcode_count = SWAP32(fxlc.tokens[1]);
+    uint32 opcode_count = CTXSWAP32(fxlc.tokens[1]);
 
     const size_t len = sizeof (MOJOSHADER_preshaderInstruction) * opcode_count;
     preshader->instruction_count = (unsigned int) opcode_count;
@@ -10856,7 +10885,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
     MOJOSHADER_preshaderInstruction *inst = preshader->instructions;
     while (opcode_count--)
     {
-        const uint32 opcodetok = SWAP32(fxlc.tokens[0]);
+        const uint32 opcodetok = CTXSWAP32(fxlc.tokens[0]);
         MOJOSHADER_preshaderOpcode opcode = MOJOSHADER_PRESHADEROP_NOP;
         switch ((opcodetok >> 16) & 0xFFFF)
         {
@@ -10897,7 +10926,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
             default: fail(ctx, "Unknown preshader opcode."); break;
         } // switch
 
-        uint32 operand_count = SWAP32(fxlc.tokens[1]) + 1;  // +1 for dest.
+        uint32 operand_count = CTXSWAP32(fxlc.tokens[1]) + 1;  // +1 for dest.
 
         inst->opcode = opcode;
         inst->element_count = (unsigned int) (opcodetok & 0xFF);
@@ -10914,11 +10943,11 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
         MOJOSHADER_preshaderOperand *operand = inst->operands;
         while (operand_count--)
         {
-            const unsigned int item = (unsigned int) SWAP32(fxlc.tokens[2]);
+            const unsigned int item = (unsigned int) CTXSWAP32(fxlc.tokens[2]);
 
             // !!! FIXME: Is this used anywhere other than INPUT? -flibit
-            const uint32 numarrays = SWAP32(fxlc.tokens[0]);
-            switch (SWAP32(fxlc.tokens[1]))
+            const uint32 numarrays = CTXSWAP32(fxlc.tokens[0]);
+            switch (CTXSWAP32(fxlc.tokens[1]))
             {
                 case 1:  // literal from CLIT block.
                 {
@@ -10960,7 +10989,7 @@ static void parse_preshader(Context *ctx, const uint32 *tokens, uint32 tokcount)
                         // !!! FIXME: fail if fxlc.tokcount*2 > numarrays ?
                         for (i = 0; i < numarrays; i++)
                         {
-                            const uint32 jmp = SWAP32(fxlc.tokens[4]);
+                            const uint32 jmp = CTXSWAP32(fxlc.tokens[4]);
                             const uint32 bigjmp = (jmp >> 4) * 4;
                             const uint32 ltljmp = (jmp >> 2) & 3;
                             operand->array_registers[i] = bigjmp + ltljmp;
@@ -11039,9 +11068,10 @@ static int parse_comment_token(Context *ctx)
     uint32 commenttoks = 0;
     if (is_comment_token(ctx, *ctx->tokens, &commenttoks))
     {
+        printf("Comment\n");
         if ((commenttoks >= 2) && (commenttoks < ctx->tokencount))
         {
-            const uint32 id = SWAP32(ctx->tokens[1]);
+            const uint32 id = CTXSWAP32(ctx->tokens[1]);
             if (id == PRES_ID)
                 parse_preshader(ctx, ctx->tokens + 2, commenttoks - 2);
             else if (id == CTAB_ID)
@@ -11059,8 +11089,9 @@ static int parse_comment_token(Context *ctx)
 
 static int parse_end_token(Context *ctx)
 {
-    if (SWAP32(*(ctx->tokens)) != 0x0000FFFF)   // end token always 0x0000FFFF.
+    if (CTXSWAP32(*(ctx->tokens)) != 0x0000FFFF)   // end token always 0x0000FFFF.
         return 0;  // not us, eat no tokens.
+    printf("End\n");
 
     if (!ctx->know_shader_size)  // this is the end of stream!
         ctx->tokencount = 1;
@@ -11077,8 +11108,9 @@ static int parse_end_token(Context *ctx)
 static int parse_phase_token(Context *ctx)
 {
     // !!! FIXME: needs state; allow only one phase token per shader, I think?
-    if (SWAP32(*(ctx->tokens)) != 0x0000FFFD) // phase token always 0x0000FFFD.
+    if (CTXSWAP32(*(ctx->tokens)) != 0x0000FFFD) // phase token always 0x0000FFFD.
         return 0;  // not us, eat no tokens.
+    printf("Phase\n");
 
     if ( (!shader_is_pixel(ctx)) || (!shader_version_exactly(ctx, 1, 4)) )
         fail(ctx, "phase token only available in 1.4 pixel shaders");
@@ -11148,6 +11180,7 @@ static Context *build_context(const char *profile,
                               const unsigned int swizcount,
                               const MOJOSHADER_samplerMap *smap,
                               const unsigned int smapcount,
+                              const bool se,
                               MOJOSHADER_malloc m, MOJOSHADER_free f, void *d)
 {
     if (m == NULL) m = MOJOSHADER_internal_malloc;
@@ -11158,6 +11191,7 @@ static Context *build_context(const char *profile,
         return NULL;
 
     memset(ctx, '\0', sizeof (Context));
+    ctx->swap_endian = se;
     ctx->malloc = m;
     ctx->free = f;
     ctx->malloc_data = d;
@@ -11937,6 +11971,7 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
                                              const unsigned int swizcount,
                                              const MOJOSHADER_samplerMap *smap,
                                              const unsigned int smapcount,
+                                             const bool se,
                                              MOJOSHADER_malloc m,
                                              MOJOSHADER_free f, void *d)
 {
@@ -11949,7 +11984,7 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
         return &MOJOSHADER_out_of_mem_data;  // supply both or neither.
 
     ctx = build_context(profile, mainfn, tokenbuf, bufsize, swiz, swizcount,
-                        smap, smapcount, m, f, d);
+                        smap, smapcount, se, m, f, d);
     if (ctx == NULL)
         return &MOJOSHADER_out_of_mem_data;
 
@@ -11967,6 +12002,12 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
 
     // Version token always comes first.
     ctx->current_position = 0;
+    if ((rc = parse_x360_junk(ctx)) != 0)
+    {
+        // ... unless someone squeezed junk in here.
+        adjust_token_position(ctx, rc);
+        ctx->current_position = 0;
+    } // if
     rc = parse_version_token(ctx, profile);
 
     if (!ctx->mainfn)
@@ -11990,6 +12031,7 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
     adjust_token_position(ctx, rc);
 
     // parse out the rest of the tokens after the version token...
+    printf("Parsing %i tokens\n", ctx->tokencount);
     while (ctx->tokencount > 0)
     {
         if (!ctx->know_shader_size)
@@ -11998,10 +12040,12 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
         // reset for each token.
         if (isfail(ctx))
         {
+            // break;
             failed = 1;
             ctx->isfail = 0;
         } // if
 
+        printf("Parsing token %i @ 0x%08X: 0x%08X\n", ctx->tokens - ctx->orig_tokens, 4 * (ctx->tokens - ctx->orig_tokens), CTXSWAP32(*ctx->tokens));
         rc = parse_token(ctx);
         if ( ((uint32) rc) > ctx->tokencount )
         {
@@ -12011,6 +12055,7 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
 
         adjust_token_position(ctx, rc);
     } // while
+    printf("\n");
 
     ctx->current_position = MOJOSHADER_POSITION_AFTER;
 
@@ -12118,6 +12163,7 @@ int MOJOSHADER_maxShaderModel(const char *profile)
 
 const MOJOSHADER_preshader *MOJOSHADER_parsePreshader(const unsigned char *buf,
                                                       const unsigned int buflen,
+                                                      const bool se,
                                                       MOJOSHADER_malloc m,
                                                       MOJOSHADER_free f,
                                                       void *d)
@@ -12125,7 +12171,7 @@ const MOJOSHADER_preshader *MOJOSHADER_parsePreshader(const unsigned char *buf,
     MOJOSHADER_preshader *retval = NULL;
 
     // We need just enough Context for allocators and error state.
-    Context *ctx = build_context(NULL, NULL, buf, buflen, NULL, 0, NULL, 0, m, f, d);
+    Context *ctx = build_context(NULL, NULL, buf, buflen, NULL, 0, NULL, 0, se, m, f, d);
     parse_preshader(ctx, ctx->tokens, ctx->tokencount);
     if (!isfail(ctx))
     {

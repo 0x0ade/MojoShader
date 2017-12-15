@@ -792,6 +792,7 @@ DECLSPEC const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
                                                       const unsigned int swizcount,
                                                       const MOJOSHADER_samplerMap *smap,
                                                       const unsigned int smapcount,
+                                                      const bool se,
                                                       MOJOSHADER_malloc m,
                                                       MOJOSHADER_free f,
                                                       void *d);
@@ -832,6 +833,7 @@ DECLSPEC void MOJOSHADER_freeParseData(const MOJOSHADER_parseData *data);
  */
 DECLSPEC const MOJOSHADER_preshader *MOJOSHADER_parsePreshader(const unsigned char *buf,
                                                                const unsigned int len,
+                                                               const bool se,
                                                                MOJOSHADER_malloc m,
                                                                MOJOSHADER_free f,
                                                                void *d);

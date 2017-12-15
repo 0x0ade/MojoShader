@@ -154,6 +154,8 @@ typedef uint64_t uint64;
 
 // Byteswap magic...
 
+// Used only to swap from big to little endian.
+// Useful when running on a big endian platform (PowerPC).
 #if ((defined __GNUC__) && (defined __POWERPC__))
     static inline uint32 SWAP32(uint32 x)
     {
@@ -181,6 +183,44 @@ typedef uint64_t uint64;
 #endif
 
 #define SWAPDBL(x) (x)  // !!! FIXME
+
+// Used to forcibly swap between big and little endian.
+// Useful when reading X360 effects.
+#if ((defined __GNUC__) && (defined __POWERPC__))
+    static inline uint32 FSWAP32(uint32 x)
+    {
+        __asm__ __volatile__("lwbrx %0,0,%1" : "=r" (x) : "r" (&x));
+        return x;
+    } // FSWAP32
+    static inline uint16 FSWAP16(uint16 x)
+    {
+        __asm__ __volatile__("lhbrx %0,0,%1" : "=r" (x) : "r" (&x));
+        return x;
+    } // FSWAP16
+#else
+    static inline uint32 FSWAP32(uint32 x)
+    {
+        return ( (((x) >> 24) & 0x000000FF) | (((x) >>  8) & 0x0000FF00) |
+                 (((x) <<  8) & 0x00FF0000) | (((x) << 24) & 0xFF000000) );
+    } // FSWAP32
+    static inline uint16 FSWAP16(uint16 x)
+    {
+        return ( (((x) >> 8) & 0x00FF) | (((x) << 8) & 0xFF00) );
+    } // FSWAP16
+#endif
+
+#define FSWAPDBL(x) (x)  // !!! FIXME
+
+// Helpers for automatic FSWAP based on ctx->swap_endian and just SWAP on PowerPC.
+#if (defined __POWERPC__)
+#define CTXSWAP16(x) (ctx->swap_endian ? (x) : SWAP16(x))
+#define CTXSWAP32(x) (ctx->swap_endian ? (x) : SWAP32(x))
+#define CTXSWAPDBL(x) (ctx->swap_endian ? (x) : SWAPDBL(x))
+#else
+#define CTXSWAP16(x) (ctx->swap_endian ? FSWAP16(x) : (x))
+#define CTXSWAP32(x) (ctx->swap_endian ? FSWAP32(x) : (x))
+#define CTXSWAPDBL(x) (ctx->swap_endian ? FSWAPDBL(x) : (x))
+#endif
 
 static inline int Min(const int a, const int b)
 {

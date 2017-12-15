@@ -557,6 +557,11 @@ typedef struct MOJOSHADER_effect
     MOJOSHADER_effectStateChanges *state_changes;
 
     /*
+     * Value used to determine whether or not endian swaps are required.
+     */
+    bool swap_endian;
+
+    /*
      * This is the malloc implementation you passed to MOJOSHADER_parseEffect().
      */
     MOJOSHADER_malloc malloc;
