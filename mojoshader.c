@@ -80,7 +80,7 @@ typedef struct Context
 {
     int isfail;
     int out_of_memory;
-    bool swap_endian;
+    bool big_endian;
     MOJOSHADER_malloc malloc;
     MOJOSHADER_free free;
     void *malloc_data;
@@ -116,7 +116,7 @@ typedef struct Context
     int endline_len;
     int profileid;
     const struct Profile *profile;
-    bool x360;
+    uint32 x360;
     MOJOSHADER_shaderType shader_type;
     uint8 major_ver;
     uint8 minor_ver;
@@ -429,9 +429,6 @@ static void failf(Context *ctx, const char *fmt, ...)
     // no filename at this level (we pass a NULL to errorlist_add_va()...)
     va_list ap;
     va_start(ap, fmt);
-    printf("Error: ");
-    vfprintf(stdout, fmt, ap);
-    printf("\n");
     errorlist_add_va(ctx->errors, NULL, ctx->current_position, fmt, ap);
     va_end(ap);
 } // failf
@@ -10289,8 +10286,6 @@ static int parse_instruction_token(Context *ctx)
         return insttoks + 1;  // pray that you resync later.
     } // if
 
-    printf("Instruction token: 0x%08X\n", token);
-    printf("Opcode: %s\n", instruction->opcode_string);
     ctx->coissue = coissue;
     if (coissue)
     {
@@ -10362,28 +10357,6 @@ static int parse_instruction_token(Context *ctx)
 
     return retval;
 } // parse_instruction_token
-
-
-static int parse_x360_junk(Context *ctx)
-{
-    // !!! FIXME: Has this ever appeared outside of XBOX 360 shaders? What does it actually do?
-    if (ctx->tokencount == 0)
-    {
-        return 0;
-    } // if
-
-    const uint32 token = CTXSWAP32(*(ctx->tokens));
-
-    if ((token & 0xFFFFFFFE) != 0x102A1100)
-    {
-        ctx->x360 = 0;
-        return 0;
-    } // if
-
-    ctx->x360 = 1;
-
-    return 1 /* parsed one token */ + 11 /* Extra junk - always the same size? */;
-} // parse_x360_junk
 
 
 static int parse_version_token(Context *ctx, const char *profilestr)
@@ -11068,7 +11041,6 @@ static int parse_comment_token(Context *ctx)
     uint32 commenttoks = 0;
     if (is_comment_token(ctx, *ctx->tokens, &commenttoks))
     {
-        printf("Comment\n");
         if ((commenttoks >= 2) && (commenttoks < ctx->tokencount))
         {
             const uint32 id = CTXSWAP32(ctx->tokens[1]);
@@ -11091,7 +11063,6 @@ static int parse_end_token(Context *ctx)
 {
     if (CTXSWAP32(*(ctx->tokens)) != 0x0000FFFF)   // end token always 0x0000FFFF.
         return 0;  // not us, eat no tokens.
-    printf("End\n");
 
     if (!ctx->know_shader_size)  // this is the end of stream!
         ctx->tokencount = 1;
@@ -11110,7 +11081,6 @@ static int parse_phase_token(Context *ctx)
     // !!! FIXME: needs state; allow only one phase token per shader, I think?
     if (CTXSWAP32(*(ctx->tokens)) != 0x0000FFFD) // phase token always 0x0000FFFD.
         return 0;  // not us, eat no tokens.
-    printf("Phase\n");
 
     if ( (!shader_is_pixel(ctx)) || (!shader_version_exactly(ctx, 1, 4)) )
         fail(ctx, "phase token only available in 1.4 pixel shaders");
@@ -11191,7 +11161,7 @@ static Context *build_context(const char *profile,
         return NULL;
 
     memset(ctx, '\0', sizeof (Context));
-    ctx->swap_endian = se;
+    ctx->big_endian = se;
     ctx->malloc = m;
     ctx->free = f;
     ctx->malloc_data = d;
@@ -11205,6 +11175,7 @@ static Context *build_context(const char *profile,
     ctx->samplermap_count = smapcount;
     ctx->endline = ENDLINE_STR;
     ctx->endline_len = strlen(ctx->endline);
+    ctx->x360 = 0;
     ctx->last_address_reg_component = -1;
     ctx->current_position = MOJOSHADER_POSITION_BEFORE;
     ctx->texm3x2pad_dst0 = -1;
@@ -11980,7 +11951,7 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
     int rc = 0;
     int failed = 0;
 
-    if ( ((m == NULL) && (f != NULL)) || ((m != NULL) && (f == NULL)) )
+    if (((m == NULL) && (f != NULL)) || ((m != NULL) && (f == NULL)))
         return &MOJOSHADER_out_of_mem_data;  // supply both or neither.
 
     ctx = build_context(profile, mainfn, tokenbuf, bufsize, swiz, swizcount,
@@ -12000,62 +11971,110 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
 
     verify_swizzles(ctx);
 
-    // Version token always comes first.
     ctx->current_position = 0;
-    if ((rc = parse_x360_junk(ctx)) != 0)
-    {
-        // ... unless someone squeezed junk in here.
-        adjust_token_position(ctx, rc);
-        ctx->current_position = 0;
-    } // if
-    rc = parse_version_token(ctx, profile);
 
-    if (!ctx->mainfn)
-        ctx->mainfn = StrDup(ctx, "main");
-
-    // drop out now if this definitely isn't bytecode. Saves lots of
-    //  meaningless errors flooding through.
-    if (rc < 0)
-    {
+    // Check if the code is code targeting the X360 Xenos GPU.
+    if (ctx->big_endian && (SWAP32(*(ctx->tokens)) & 0x00FFFFFF) == 0x00112A10) {
+        #if !SUPPORT_FORMAT_XENOS
+        fail(ctx, "Xenos (Xbox 360 GPU) shader support disabled at build-time");
         retval = build_parsedata(ctx);
         destroy_context(ctx);
         return retval;
-    } // if
+        #else
+        ctx->x360 = SWAP32(*(ctx->tokens));
 
-    if ( ((uint32) rc) > ctx->tokencount )
-    {
-        fail(ctx, "Corrupted or truncated shader");
-        ctx->tokencount = rc;
-    } // if
+        // Normally, parse_version_token would set the following.
 
-    adjust_token_position(ctx, rc);
-
-    // parse out the rest of the tokens after the version token...
-    printf("Parsing %i tokens\n", ctx->tokencount);
-    while (ctx->tokencount > 0)
-    {
-        if (!ctx->know_shader_size)
-            ctx->tokencount = 0xFFFFFFFF;  // keep this value obscenely large.
-
-        // reset for each token.
-        if (isfail(ctx))
+        // 0x00 == pixel shader, 0x01 == vertex shader
+        if ((ctx->x360 >> 24) & 0xFF == 0x00)
         {
-            // break;
-            failed = 1;
-            ctx->isfail = 0;
+            ctx->shader_type = MOJOSHADER_TYPE_PIXEL;
+            ctx->shader_type_str = "xps";
+        } // if
+        else if ((ctx->x360 >> 24) & 0x01)
+        {
+            ctx->shader_type = MOJOSHADER_TYPE_VERTEX;
+            ctx->shader_type_str = "xvs";
+        } // else if
+        else  // geometry shader? Bogus data?
+        {
+            fail(ctx, "Unsupported Xenos shader type or not a shader at all");
+            retval = build_parsedata(ctx);
+            destroy_context(ctx);
+            return retval;
+        } // else
+
+        // As far as I know, only xvs_3_0 and xps_3_0 exist. -ade
+        ctx->major_ver = 3;
+        ctx->minor_ver = 0;
+
+        if (!shader_version_supported(3, 0))
+        {
+            fail(ctx, "Shader Model 3.0 (X360) is currently unsupported.");
+            retval = build_parsedata(ctx);
+            destroy_context(ctx);
+            return retval;
         } // if
 
-        printf("Parsing token %i @ 0x%08X: 0x%08X\n", ctx->tokens - ctx->orig_tokens, 4 * (ctx->tokens - ctx->orig_tokens), CTXSWAP32(*ctx->tokens));
-        rc = parse_token(ctx);
-        if ( ((uint32) rc) > ctx->tokencount )
+        ctx->profile->start_emitter(ctx, profile);
+
+        // !!! FIXME: *grabs bottle* -ade
+
+        // We don't have any kind of "end token."
+
+        ctx->profile->end_emitter(ctx);
+
+        #endif
+    } // if
+    else
+    {
+        // Otherwise it's our usual tokenized bytecode.
+        // Version token always comes first.
+        rc = parse_version_token(ctx, profile);
+
+        if (!ctx->mainfn)
+            ctx->mainfn = StrDup(ctx, "main");
+
+        // drop out now if this definitely isn't bytecode. Saves lots of
+        //  meaningless errors flooding through.
+        if (rc < 0)
+        {
+            retval = build_parsedata(ctx);
+            destroy_context(ctx);
+            return retval;
+        } // if
+
+        if (((uint32)rc) > ctx->tokencount)
         {
             fail(ctx, "Corrupted or truncated shader");
-            break;
+            ctx->tokencount = rc;
         } // if
 
         adjust_token_position(ctx, rc);
-    } // while
-    printf("\n");
+
+        // parse out the rest of the tokens after the version token...
+        while (ctx->tokencount > 0)
+        {
+            if (!ctx->know_shader_size)
+                ctx->tokencount = 0xFFFFFFFF;  // keep this value obscenely large.
+
+            // reset for each token.
+            if (isfail(ctx))
+            {
+                failed = 1;
+                ctx->isfail = 0;
+            } // if
+
+            rc = parse_token(ctx);
+            if (((uint32)rc) > ctx->tokencount)
+            {
+                fail(ctx, "Corrupted or truncated shader");
+                break;
+            } // if
+
+            adjust_token_position(ctx, rc);
+        } // while
+    } // else
 
     ctx->current_position = MOJOSHADER_POSITION_AFTER;
 

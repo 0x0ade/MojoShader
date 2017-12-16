@@ -80,6 +80,13 @@
 #error glsles profile requires glsl profile. Fix your build.
 #endif
 
+// Likewise, if SUPPORT_FORMAT_* isn't defined, we assume an implicit desire to support.
+// Note that the "default" format is always supported and that format support is a horrible mess.
+
+#ifndef SUPPORT_FORMAT_X360
+#define SUPPORT_FORMAT_XENOS 1
+#endif
+
 // Microsoft's preprocessor has some quirks. In some ways, it doesn't work
 //  like you'd expect a C preprocessor to function.
 #ifndef MATCH_MICROSOFT_PREPROCESSOR
@@ -211,15 +218,15 @@ typedef uint64_t uint64;
 
 #define FSWAPDBL(x) (x)  // !!! FIXME
 
-// Helpers for automatic FSWAP based on ctx->swap_endian and just SWAP on PowerPC.
+// Helpers to automatically FSWAP based on ctx->big_endian and just SWAP on PowerPC.
 #if (defined __POWERPC__)
-#define CTXSWAP16(x) (ctx->swap_endian ? (x) : SWAP16(x))
-#define CTXSWAP32(x) (ctx->swap_endian ? (x) : SWAP32(x))
-#define CTXSWAPDBL(x) (ctx->swap_endian ? (x) : SWAPDBL(x))
+#define CTXSWAP16(x) (ctx->big_endian ? (x) : SWAP16(x))
+#define CTXSWAP32(x) (ctx->big_endian ? (x) : SWAP32(x))
+#define CTXSWAPDBL(x) (ctx->big_endian ? (x) : SWAPDBL(x))
 #else
-#define CTXSWAP16(x) (ctx->swap_endian ? FSWAP16(x) : (x))
-#define CTXSWAP32(x) (ctx->swap_endian ? FSWAP32(x) : (x))
-#define CTXSWAPDBL(x) (ctx->swap_endian ? FSWAPDBL(x) : (x))
+#define CTXSWAP16(x) (ctx->big_endian ? FSWAP16(x) : (x))
+#define CTXSWAP32(x) (ctx->big_endian ? FSWAP32(x) : (x))
+#define CTXSWAPDBL(x) (ctx->big_endian ? FSWAPDBL(x) : (x))
 #endif
 
 static inline int Min(const int a, const int b)

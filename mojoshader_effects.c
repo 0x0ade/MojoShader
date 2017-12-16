@@ -900,23 +900,15 @@ MOJOSHADER_effect *MOJOSHADER_parseEffect(const char *profile,
     if (len < 8)
         goto parseEffect_unexpectedEOF;
 
-    /*/
-    printf("Raw:\n");
-    for (int i = 0; i < len; i++) {
-        printf("%02X ", *(ptr + i));
-    }
-    printf("\n");
-    /**/
-
     /* Read in header magic, seek to initial offset */
     const uint8 *base = NULL;
     uint32 header = readui32(&ptr, &len, false);
-    /* Is the header endian-swapped? */
+    /* Is the header big endian (opposite endianness)? */
     bool se = header == 0xCF0BF0BC || header == 0x0109FFFE;
-    retval->swap_endian = se;
+    retval->big_endian = se;
     if (se)
     {
-        /* We're dealing with data stored using the opposite endianness,
+        /* We're dealing with data stored in the opposite endianness,
          * most probably Xbox 360 effects being read on PC.
          */
         header = FSWAP32(header);

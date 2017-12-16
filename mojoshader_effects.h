@@ -559,7 +559,7 @@ typedef struct MOJOSHADER_effect
     /*
      * Value used to determine whether or not endian swaps are required.
      */
-    bool swap_endian;
+    bool big_endian;
 
     /*
      * This is the malloc implementation you passed to MOJOSHADER_parseEffect().
