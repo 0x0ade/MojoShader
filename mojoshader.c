@@ -11986,12 +11986,12 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
         // Normally, parse_version_token would set the following.
 
         // 0x00 == pixel shader, 0x01 == vertex shader
-        if ((ctx->x360 >> 24) & 0xFF == 0x00)
+        if (((ctx->x360 >> 24) & 0xFF) == 0x00)
         {
             ctx->shader_type = MOJOSHADER_TYPE_PIXEL;
             ctx->shader_type_str = "xps";
         } // if
-        else if ((ctx->x360 >> 24) & 0x01)
+        else if (((ctx->x360 >> 24) & 0xFF) == 0x01)
         {
             ctx->shader_type = MOJOSHADER_TYPE_VERTEX;
             ctx->shader_type_str = "xvs";
@@ -12015,6 +12015,9 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
             destroy_context(ctx);
             return retval;
         } // if
+
+        if (!ctx->mainfn)
+            ctx->mainfn = StrDup(ctx, "main");
 
         ctx->profile->start_emitter(ctx, profile);
 
