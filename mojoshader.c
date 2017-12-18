@@ -116,7 +116,7 @@ typedef struct Context
     int endline_len;
     int profileid;
     const struct Profile *profile;
-    uint32 x360;
+    bool x360;
     MOJOSHADER_shaderType shader_type;
     uint8 major_ver;
     uint8 minor_ver;
@@ -171,6 +171,14 @@ typedef struct Context
     int arb1_wrote_position;
     // !!! FIXME: move these into SUPPORT_PROFILE sections.
 
+    #if SUPPORT_FORMAT_XENOS
+    uint32 x360_code_start;
+    uint32 x360_code_length;
+    uint32 x360_current_index;
+    uint32 x360_current_subindex;
+    uint32 x360_current_position;
+    #endif
+
     int have_preshader;
     int ignores_ctab;
     int reset_texmpad;
@@ -203,6 +211,14 @@ typedef struct Context
     int metal_need_header_texture;
 #endif
 } Context;
+
+#if SUPPORT_FORMAT_XENOS
+typedef struct Xenos_Label
+{
+    uint32 absolute;
+    Xenos_Label *prev; // linked lists ftw.
+} Xenos_Label;
+#endif
 
 
 // Use these macros so we can remove all bits of these profiles from the build.
@@ -10235,25 +10251,40 @@ typedef struct
     emit_function emitter[STATICARRAYLEN(profiles)];
 } Instruction;
 
+#define INSTRUCTION_STATE(op, opstr, slots, a, t) { \
+    opstr, slots, t, parse_args_##a, state_##op, PROFILE_EMITTERS(op) \
+},
+
+#define INSTRUCTION(op, opstr, slots, a, t) { \
+    opstr, slots, t, parse_args_##a, 0, PROFILE_EMITTERS(op) \
+},
+
 // These have to be in the right order! This array is indexed by the value
 //  of the instruction token.
 static const Instruction instructions[] =
 {
-    #define INSTRUCTION_STATE(op, opstr, slots, a, t) { \
-        opstr, slots, t, parse_args_##a, state_##op, PROFILE_EMITTERS(op) \
-    },
-
-    #define INSTRUCTION(op, opstr, slots, a, t) { \
-        opstr, slots, t, parse_args_##a, 0, PROFILE_EMITTERS(op) \
-    },
 
     #define MOJOSHADER_DO_INSTRUCTION_TABLE 1
     #include "mojoshader_internal.h"
     #undef MOJOSHADER_DO_INSTRUCTION_TABLE
 
-    #undef INSTRUCTION
-    #undef INSTRUCTION_STATE
 };
+
+#if SUPPORT_FORMAT_XENOS
+// These have to be in the right order! This array is indexed by the value
+//  of the instruction token.
+static const Instruction instructions_x360_cf[] =
+{
+
+    #define MOJOSHADER_DO_INSTRUCTION_X360_CF_TABLE 1
+    #include "mojoshader_internal.h"
+    #undef MOJOSHADER_DO_INSTRUCTION_X360_CF_TABLE
+
+};
+#endif
+
+#undef INSTRUCTION
+#undef INSTRUCTION_STATE
 
 
 // parse various token types...
@@ -11118,6 +11149,187 @@ static int parse_token(Context *ctx)
 } // parse_token
 
 
+#if SUPPORT_FORMAT_XENOS
+// parse Xenos (Xbox 360) GPU code
+
+static int parse_xenos(Context *ctx, const char *profilestr)
+{
+    ctx->x360 = 1;
+
+    /* Header format:
+     * uint32: magic + shader type
+     * uint32: code starting offset in bytes
+     * uint32: code length in bytes
+     * Rest: Combination of register using declarations and other config data.
+     */
+
+    const uint* header = ctx->tokens;
+    const uint32 magic = CTXSWAP32(header[0]);
+
+    // 0x00 == pixel shader, 0x01 == vertex shader
+    if ((magic & 0xFF) == 0x00)
+    {
+        ctx->shader_type = MOJOSHADER_TYPE_PIXEL;
+        ctx->shader_type_str = "xps";
+    } // if
+    else if ((magic & 0xFF) == 0x01)
+    {
+        ctx->shader_type = MOJOSHADER_TYPE_VERTEX;
+        ctx->shader_type_str = "xvs";
+    } // else if
+    else  // geometry shader? Bogus data?
+    {
+        fail(ctx, "Unsupported Xenos shader type or not a shader at all");
+        return -1;
+    } // else
+
+    // As far as I know, only xvs_3_0 and xps_3_0 exist. -ade
+    ctx->major_ver = 3;
+    ctx->minor_ver = 0;
+
+    if (!shader_version_supported(3, 0))
+    {
+        fail(ctx, "Shader Model 3.0 (Xenos) is currently unsupported.");
+        return -1;
+    } // if
+
+    ctx->x360_code_start = CTXSWAP32(header[1]) / 4;
+    ctx->x360_code_length = CTXSWAP32(header[2]) / 4;
+
+    // We (currently) don't care about any other metadata.
+
+    /* The following code is heavily influenced by the information 
+     * gathered from analyzing Xenia's shader translator.
+     *
+     * Xenia executes the shaders in a pseudo state machine "master switch."
+     * This ensures accurate translation of any weird jump / code flow tricks,
+     * but this approach is incompatible with some profiles.
+     * 
+     * Instead, MojoShader tries to translate loops, conditional instructions
+     * and conditional jumps into their per-profile counterparts.
+     * This will fail horribly whenever any advanced conditional jump trickery
+     * is involved, but it's the next-best thing(tm).
+     *
+     * TL;DR: It's a mess.
+     * -ade
+     */
+
+    // !!! FIXME: Do we actually need this with our "direct" approach? Hook this up to ctx->subroutines?
+    Xenos_Label *labels = NULL;
+    // A block of 3 DWORDs contains 2 control flow instructions, 1.5 DWORDs each.
+    // As for actual instructions, ...
+    uint64 instrcodes[2];
+    uint64 instrcode;
+    Instruction *instr;
+    uint32 cf_opcode;
+
+    // Jump to beginning of actual code.
+    ctx->tokens = ctx->orig_tokens + ctx->x360_code_start;
+    // Sync token count to X360 code length for safety.
+    ctx->tokencount = ctx->x360_code_length;
+    ctx->current_position = 0;
+
+    // Preprocessing pass.
+    for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i) {
+        instrcodes[0] = uint64(CTXSWAP32(ctx->tokens[0]))       | (uint64(CTXSWAP32(ctx->tokens[1]) & 0xFFFF) << 32);
+        instrcodes[1] = uint64(CTXSWAP32(ctx->tokens[1]) >> 16) | (uint64(CTXSWAP32(ctx->tokens[2]) & 0xFFFF) << 16);
+
+        // Parse the two instructions.
+        for (uint32 subi = 0; subi < 2; subi++) {
+            instrcode = instrcodes[subi];
+            cf_opcode = (instrcode >> 44) & 0xF;
+            
+            uint32 target;
+
+            if (cf_opcode == 7 || // LOOPSTART
+                cf_opcode == 8 || // LOOPEND
+                cf_opcode == 9 || // CONDCALL
+                cf_opcode == 11 // CONDJMP
+                ) {
+                // For the above opcodes:
+                // The target address is contained in the first 13 bits of the instruction code.
+                // !!! FIXME: Xenos preprocessing "address" isn't what we expect.
+                target = uint32(instrcode & 0x00001FFF);
+            } // if
+            else
+            {
+                continue;
+            } // else
+
+            if (labels == NULL) {
+                labels = (Xenos_Label *) Malloc(ctx, sizeof(Xenos_Label));
+                memset(labels, '\0', sizeof(Xenos_Label));
+            } // if
+            else
+            {
+                Xenos_Label *prev = labels;
+                labels = (Xenos_Label *)Malloc(ctx, sizeof(Xenos_Label));
+                memset(labels, '\0', sizeof(Xenos_Label));
+                labels->prev = prev;
+            } // else
+
+            labels->absolute = target;
+
+        } // for
+
+        adjust_token_position(ctx, 3);
+    } // for
+
+
+    // Jump to beginning of actual code... again.
+    ctx->tokens = ctx->orig_tokens + ctx->x360_code_start;
+    // Sync token count to X360 code length for safety.
+    ctx->tokencount = ctx->x360_code_length;
+    ctx->current_position = 0;
+
+    // Actual translation pass.
+    ctx->profile->start_emitter(ctx, profilestr);
+    if (!ctx->mainfn)
+        ctx->mainfn = StrDup(ctx, "main");
+
+    bool returned = false;
+
+    for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i) {
+        instrcodes[0] = uint64(CTXSWAP32(ctx->tokens[0]))       | (uint64(CTXSWAP32(ctx->tokens[1]) & 0xFFFF) << 32);
+        instrcodes[1] = uint64(CTXSWAP32(ctx->tokens[1]) >> 16) | (uint64(CTXSWAP32(ctx->tokens[2]) & 0xFFFF) << 16);
+
+        // Parse the two instructions.
+        for (uint32 subi = 0; subi < 2; subi++) {
+            ctx->x360_current_index = i;
+            ctx->x360_current_subindex = subi;
+            ctx->x360_current_position = 2 * i + subi;
+            instrcode = instrcodes[subi];
+            cf_opcode = (instrcode >> 44) & 0xF;
+
+            returned |= cf_opcode == 10; // RET
+
+            const Instruction *cf_instr = &instructions_x360_cf[cf_opcode];
+            const emit_function cf_emitter = cf_instr->emitter[ctx->profileid];
+            cf_emitter(ctx); // NOP most of the time.
+            // !!! FIXME: Implement and map control flow emitters.
+
+        }
+
+        adjust_token_position(ctx, 3);
+    } // for
+
+    if (!returned) // Is this even possible?
+        ctx->profile->end_emitter(ctx);
+
+    // Free labels.
+    while (labels != NULL)
+    {
+        Xenos_Label *prev = labels->prev;
+        Free(ctx, labels);
+        labels = prev;
+    } // while
+
+    return 0;
+}
+
+#endif
+
+
 static int find_profile_id(const char *profile)
 {
     size_t i;
@@ -11974,58 +12186,23 @@ const MOJOSHADER_parseData *MOJOSHADER_parse(const char *profile,
     ctx->current_position = 0;
 
     // Check if the code is code targeting the X360 Xenos GPU.
-    if (ctx->big_endian && (SWAP32(*(ctx->tokens)) & 0x00FFFFFF) == 0x00112A10) {
+    if (ctx->big_endian && (CTXSWAP32(*(ctx->tokens)) & 0xFFFFFF00) == 0x102A1100) {
         #if !SUPPORT_FORMAT_XENOS
         fail(ctx, "Xenos (Xbox 360 GPU) shader support disabled at build-time");
         retval = build_parsedata(ctx);
         destroy_context(ctx);
         return retval;
         #else
-        ctx->x360 = SWAP32(*(ctx->tokens));
 
-        // Normally, parse_version_token would set the following.
+        // All the Xenos magic happens in parse_xenos.
+        rc = parse_xenos(ctx, profile);
 
-        // 0x00 == pixel shader, 0x01 == vertex shader
-        if (((ctx->x360 >> 24) & 0xFF) == 0x00)
+        if (rc != 0)
         {
-            ctx->shader_type = MOJOSHADER_TYPE_PIXEL;
-            ctx->shader_type_str = "xps";
-        } // if
-        else if (((ctx->x360 >> 24) & 0xFF) == 0x01)
-        {
-            ctx->shader_type = MOJOSHADER_TYPE_VERTEX;
-            ctx->shader_type_str = "xvs";
-        } // else if
-        else  // geometry shader? Bogus data?
-        {
-            fail(ctx, "Unsupported Xenos shader type or not a shader at all");
-            retval = build_parsedata(ctx);
-            destroy_context(ctx);
-            return retval;
-        } // else
-
-        // As far as I know, only xvs_3_0 and xps_3_0 exist. -ade
-        ctx->major_ver = 3;
-        ctx->minor_ver = 0;
-
-        if (!shader_version_supported(3, 0))
-        {
-            fail(ctx, "Shader Model 3.0 (X360) is currently unsupported.");
             retval = build_parsedata(ctx);
             destroy_context(ctx);
             return retval;
         } // if
-
-        if (!ctx->mainfn)
-            ctx->mainfn = StrDup(ctx, "main");
-
-        ctx->profile->start_emitter(ctx, profile);
-
-        // !!! FIXME: *grabs bottle* -ade
-
-        // We don't have any kind of "end token."
-
-        ctx->profile->end_emitter(ctx);
 
         #endif
     } // if

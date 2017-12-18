@@ -645,11 +645,8 @@ static void readsmallobjects(const uint32 numsmallobjects,
               || object->type == MOJOSHADER_SYMTYPE_TEXTURE1D
               || object->type == MOJOSHADER_SYMTYPE_TEXTURE2D
               || object->type == MOJOSHADER_SYMTYPE_TEXTURE3D
-              || object->type == MOJOSHADER_SYMTYPE_TEXTURECUBE)
-        {
-            // No-op. Why is this even here?
-        } // else if
-        else if (object->type == MOJOSHADER_SYMTYPE_SAMPLER
+              || object->type == MOJOSHADER_SYMTYPE_TEXTURECUBE
+              || object->type == MOJOSHADER_SYMTYPE_SAMPLER
               || object->type == MOJOSHADER_SYMTYPE_SAMPLER1D
               || object->type == MOJOSHADER_SYMTYPE_SAMPLER2D
               || object->type == MOJOSHADER_SYMTYPE_SAMPLER3D
@@ -835,11 +832,8 @@ static void readlargeobjects(const uint32 numlargeobjects,
               || object->type == MOJOSHADER_SYMTYPE_TEXTURE1D
               || object->type == MOJOSHADER_SYMTYPE_TEXTURE2D
               || object->type == MOJOSHADER_SYMTYPE_TEXTURE3D
-              || object->type == MOJOSHADER_SYMTYPE_TEXTURECUBE)
-        {
-            // No-op. Why is this even here?
-        } // else if
-        else if (object->type == MOJOSHADER_SYMTYPE_SAMPLER
+              || object->type == MOJOSHADER_SYMTYPE_TEXTURECUBE
+              || object->type == MOJOSHADER_SYMTYPE_SAMPLER
               || object->type == MOJOSHADER_SYMTYPE_SAMPLER1D
               || object->type == MOJOSHADER_SYMTYPE_SAMPLER2D
               || object->type == MOJOSHADER_SYMTYPE_SAMPLER3D
