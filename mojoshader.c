@@ -7,6 +7,9 @@
  *  This file written by Ryan C. Gordon.
  */
 
+// This file contains info and structs from Xenia's shader translator.
+// Ben Vanik has given permission to reuse parts of it in MojoShader. -ade
+
 // !!! FIXME: this file really needs to be split up.
 // !!! FIXME: I keep changing coding styles for symbols and typedefs.
 
@@ -74,6 +77,125 @@ typedef struct CtabData
     int symbol_count;
     MOJOSHADER_symbol *symbols;
 } CtabData;
+
+#if SUPPORT_FORMAT_XENOS
+typedef struct Xenos_Label
+{
+    uint32 absolute;
+    Xenos_Label *prev; // linked lists ftw.
+} Xenos_Label;
+
+// Helper struct, will be cast to one of the specific structs.
+typedef struct Xenos_Instruction
+{
+    uint32 _0;
+    uint32 _1;
+    uint32 _2;
+} Xenos_Instruction;
+
+// Struct based on Xenia's VertexFetchInstruction.
+typedef struct Xenos_Instruction_VFetch
+{
+    uint32 opcode_value : 5;
+    uint32 src_reg : 6;
+    uint32 src_reg_am : 1;
+    uint32 dst_reg : 6;
+    uint32 dst_reg_am : 1;
+    uint32 must_be_one : 1;
+    uint32 const_index : 5;
+    uint32 const_index_sel : 2;
+    uint32 prefetch_count : 3;
+    uint32 src_swiz : 2;
+
+    uint32 dst_swiz : 12;
+    uint32 fomat_comp_all : 1;
+    uint32 num_format_all : 1;
+    uint32 signed_rf_mode_all : 1;
+    uint32 is_index_rounded : 1;
+    uint32 format : 6;
+    uint32 reserved2 : 2;
+    uint32 exp_adjust : 6;
+    uint32 is_mini_fetch : 1;
+    uint32 is_predicated : 1;
+
+    uint32 stride : 8;
+    uint32 offset : 23;
+    uint32 pred_condition : 1;
+} Xenos_Instruction_VFetch;
+
+// Struct based on Xenia's TextureFetchInstruction.
+typedef struct Xenos_Instruction_TFetch
+{
+    uint32 opcode_value : 5;
+    uint32 src_reg : 6;
+    uint32 src_reg_am : 1;
+    uint32 dst_reg : 6;
+    uint32 dst_reg_am : 1;
+    uint32 fetch_valid_only : 1;
+    uint32 const_index : 5;
+    uint32 tx_coord_denorm : 1;
+    uint32 src_swiz : 6;          // xyz
+
+    uint32 dst_swiz : 12;         // xyzw
+    uint32 mag_filter : 2;        // instr_tex_filter_t
+    uint32 min_filter : 2;        // instr_tex_filter_t
+    uint32 mip_filter : 2;        // instr_tex_filter_t
+    uint32 aniso_filter : 3;      // instr_aniso_filter_t
+    uint32 arbitrary_filter : 3;  // instr_arbitrary_filter_t
+    uint32 vol_mag_filter : 2;    // instr_tex_filter_t
+    uint32 vol_min_filter : 2;    // instr_tex_filter_t
+    uint32 use_comp_lod : 1;
+    uint32 use_reg_lod : 1;
+    uint32 unk : 1;
+    uint32 is_predicated : 1;
+
+    uint32 use_reg_gradients : 1;
+    uint32 sample_location : 1;
+    uint32 lod_bias : 7;
+    uint32 unused : 5;
+    uint32 dimension : 2;
+    uint32 offset_x : 5;
+    uint32 offset_y : 5;
+    uint32 offset_z : 5;
+    uint32 pred_condition : 1;
+} Xenos_Instruction_TFetch;
+
+// Struct based on Xenia's AluInstruction.
+typedef struct Xenos_Instruction_Alu
+{
+    uint32 vector_dest : 6;
+    uint32 vector_dest_rel : 1;
+    uint32 abs_constants : 1;
+    uint32 scalar_dest : 6;
+    uint32 scalar_dest_rel : 1;
+    uint32 export_data : 1;
+    uint32 vector_write_mask : 4;
+    uint32 scalar_write_mask : 4;
+    uint32 vector_clamp : 1;
+    uint32 scalar_clamp : 1;
+    uint32 scalar_opc : 6;  // instr_scalar_opc_t
+
+    uint32 src3_swiz : 8;
+    uint32 src2_swiz : 8;
+    uint32 src1_swiz : 8;
+    uint32 src3_reg_negate : 1;
+    uint32 src2_reg_negate : 1;
+    uint32 src1_reg_negate : 1;
+    uint32 pred_condition : 1;
+    uint32 is_predicated : 1;
+    uint32 address_absolute : 1;
+    uint32 const_1_rel_abs : 1;
+    uint32 const_0_rel_abs : 1;
+
+    uint32 src3_reg : 8;
+    uint32 src2_reg : 8;
+    uint32 src1_reg : 8;
+    uint32 vector_opc : 5;  // instr_vector_opc_t
+    uint32 src3_sel : 1;
+    uint32 src2_sel : 1;
+    uint32 src1_sel : 1;
+} Xenos_Instruction_Alu;
+#endif
 
 // Context...this is state that changes as we parse through a shader...
 typedef struct Context
@@ -174,9 +296,15 @@ typedef struct Context
     #if SUPPORT_FORMAT_XENOS
     uint32 x360_code_start;
     uint32 x360_code_length;
-    uint32 x360_current_index;
-    uint32 x360_current_subindex;
-    uint32 x360_current_position;
+    Xenos_Label *x360_labels;
+    uint32 x360_cf_index;
+    uint32 x360_cf_subindex;
+    uint32 x360_cf_position;
+    uint64 x360_cf_instrcode;
+    uint32 x360_cf_opcode;
+    uint32 x360_index;
+    Xenos_Instruction *x360_instrdata;
+    uint32 x360_opcode;
     #endif
 
     int have_preshader;
@@ -211,14 +339,6 @@ typedef struct Context
     int metal_need_header_texture;
 #endif
 } Context;
-
-#if SUPPORT_FORMAT_XENOS
-typedef struct Xenos_Label
-{
-    uint32 absolute;
-    Xenos_Label *prev; // linked lists ftw.
-} Xenos_Label;
-#endif
 
 
 // Use these macros so we can remove all bits of these profiles from the build.
@@ -915,6 +1035,178 @@ static const char *get_D3D_register_string(Context *ctx,
     return retval;
 } // get_D3D_register_string
 
+
+// Profile-less "meta" instructions.
+
+#define META_EMITTER(op) emit_META_##op,
+#define EMIT_META_OPCODE_UNIMPLEMENTED_FUNC(op) \
+    static void emit_META_##op(Context *ctx) { \
+        /*fail(ctx, #op " unimplemented (meta opcode)"); // NOP for now*/ \
+    }
+
+static void emit_META_NOP(Context *ctx)
+{
+    // no-op is a no-op.  :)
+} // emit_META_NOP
+
+#if SUPPORT_FORMAT_XENOS
+
+static void emit_META_XENOS_TFETCH(Context *ctx)
+{
+    Xenos_Instruction_TFetch *data = (Xenos_Instruction_TFetch *)ctx->x360_instrdata;
+    // const Instruction *instr = &instructions_x360_tfetch[ctx->x360_opcode];
+    // const emit_function emitter = instr->emitter[ctx->profileid];
+    // !!! FIXME: Implement Xenos texture fetch instructions
+} // emit_META_XENOS_TFETCH
+
+static void emit_META_XENOS_VFETCH(Context *ctx)
+{
+    // VFETCH!
+    // !!! FIXME: Implement Xenos VFETCH... ha, ha...
+    // fail(ctx, "VFETCH. Nothing more to be said.");
+} // emit_META_XENOS_VFETCH
+
+static void emit_META_XENOS_EXEC_(Context *ctx, bool cond, bool cond_predicated)
+{
+    uint32 address = (uint32)       (ctx->x360_cf_instrcode & 0x000000000FFF);
+    uint32 count = (uint32)         ((ctx->x360_cf_instrcode & 0x000000007000) >> 12);
+    // From Xenia: Sequence bits, 2 per instruction, indicating whether ALU or fetch.
+    uint32 sequence = (uint32)      ((ctx->x360_cf_instrcode & 0x00000FFF0000) >> 16);
+
+    // if (!cond || cond_predicated)
+    bool clean = (bool)             ((ctx->x360_cf_instrcode & 0x03FC00000000) >> 34);
+    // if (cond && !cond_predicated)
+    uint32 bool_address = (uint32)  ((ctx->x360_cf_instrcode & 0x03FC00000000) >> 34);
+    // if (!cond || cond_predicated)
+    bool bool_value = (bool)        ((ctx->x360_cf_instrcode & 0x040000000000) >> 42);
+
+    bool absolute = (bool)          ((ctx->x360_cf_instrcode & 0x080000000000) >> 43);
+
+    if (cond)
+    {
+        if (cond_predicated)
+        {
+            // !!! FIXME: Fill ctx->source_args, emit IF
+            // Xenia GLSL source:
+            /*
+            EmitSourceDepth("if (%cp0) {\n", instr.condition ? ' ' : '!');
+            */
+        } // if
+        else
+        {
+            // !!! FIXME: Fill ctx->instruction_controls, ctx->source_args, emit IFC (comparison, a, b)
+            // Xenia GLSL source:
+            /*
+            EmitSourceDepth("if ((state.bool_consts[%d] & (1 << %d)) %c= 0) {\n",
+            instr.bool_constant_index / 32,
+            instr.bool_constant_index % 32,
+            instr.condition ? '!' : '=');
+            */
+        } // else
+    } // if
+
+    // Temporarily move back to origin.
+    uint32 previous_position = ctx->current_position;
+    ctx->tokens = ctx->orig_tokens + ctx->x360_code_start;
+    // Sync token count to X360 code length for safety.
+    ctx->tokencount = ctx->x360_code_length;
+    ctx->current_position = 0;
+    adjust_token_position(ctx, address * 3);
+
+    if (ctx->x360_instrdata == NULL)
+    {
+        // We can't create it in build_context and only need it if we ever hit this.
+        ctx->x360_instrdata = (Xenos_Instruction *) Malloc(ctx, sizeof(Xenos_Instruction));
+    } // if
+
+    for (uint32 i = 0; i < count; ++i)
+    {
+        ctx->x360_index = i;
+
+        ctx->x360_instrdata->_0 = CTXSWAP32(ctx->tokens[0]);
+        ctx->x360_instrdata->_1 = CTXSWAP32(ctx->tokens[1]);
+        ctx->x360_instrdata->_2 = CTXSWAP32(ctx->tokens[2]);
+
+        // if ((sequence >> (2 * i)) & 0x2) ; // "sync", unused
+
+        if ((sequence >> (2 * i)) & 0x1)
+        {
+            // Fetch instruction    
+            ctx->x360_opcode = ((Xenos_Instruction_TFetch *) ctx->x360_instrdata)->opcode_value;
+            if (ctx->x360_opcode == 0)
+            {
+                emit_META_XENOS_VFETCH(ctx);
+            } // if
+            else
+            {
+                emit_META_XENOS_TFETCH(ctx);
+            } // else
+        } // if
+        else
+        {
+            // ALU instruction
+            // !!! FIXME: Implement Xenos ALU instructions
+        } // else
+
+        adjust_token_position(ctx, 3);
+    }
+
+    // Move back to where we were before.
+    ctx->tokens = ctx->orig_tokens + ctx->x360_code_start;
+    // Sync token count to X360 code length for safety.
+    ctx->tokencount = ctx->x360_code_length;
+    ctx->current_position = 0;
+    adjust_token_position(ctx, ctx->current_position);
+
+    if (cond)
+    {
+        // Invoke ENDIF emitter.
+        // instructions[OPCODE_ENDIF].emitter[ctx->profileid](ctx);
+    } // if
+
+} // emit_META_XENOS_EXEC_
+
+static void emit_META_XENOS_EXEC(Context *ctx)
+{
+    emit_META_XENOS_EXEC_(ctx, false, false);
+} // emit_META_XENOS_EXEC
+
+static void emit_META_XENOS_CONDEXEC(Context *ctx)
+{
+    emit_META_XENOS_EXEC_(ctx, true, false);
+} // emit_META_XENOS_CONDEXEC
+
+static void emit_META_XENOS_CONDEXECPRED(Context *ctx)
+{
+    emit_META_XENOS_EXEC_(ctx, true, true);
+} // emit_META_XENOS_CONDEXECPRED
+
+static void emit_META_XENOS_EXECEND_(Context *ctx, bool cond, bool cond_predicate)
+{
+    // "END" doesn't mean what I thought it meant... -ade
+    emit_META_XENOS_EXEC_(ctx, cond, cond_predicate);
+} // emit_META_XENOS_EXECEND_
+
+static void emit_META_XENOS_EXECEND(Context *ctx)
+{
+    emit_META_XENOS_EXECEND_(ctx, false, false);
+} // emit_META_XENOS_EXECEND
+
+static void emit_META_XENOS_CONDEXECEND(Context *ctx)
+{
+    emit_META_XENOS_EXECEND_(ctx, true, false);
+} // emit_META_XENOS_CONDEXECEND
+
+static void emit_META_XENOS_CONDEXECPREDEND(Context *ctx)
+{
+    emit_META_XENOS_EXECEND_(ctx, true, true);
+} // emit_META_XENOS_CONDEXECPREDEND
+
+EMIT_META_OPCODE_UNIMPLEMENTED_FUNC(XENOS_CONDCALL)
+EMIT_META_OPCODE_UNIMPLEMENTED_FUNC(XENOS_CONDJMP)
+EMIT_META_OPCODE_UNIMPLEMENTED_FUNC(XENOS_ALLOC)
+
+#endif
 
 // !!! FIXME: can we split the profile code out to separate source files?
 
@@ -2265,28 +2557,43 @@ static void emit_GLSL_start(Context *ctx, const char *profilestr)
 static void emit_GLSL_RET(Context *ctx);
 static void emit_GLSL_end(Context *ctx)
 {
-    // ps_1_* writes color to r0 instead oC0. We move it to the right place.
-    // We don't have to worry about a RET opcode messing this up, since
-    //  RET isn't available before ps_2_0.
-    if (shader_is_pixel(ctx) && !shader_version_atleast(ctx, 2, 0))
+    // If we're not in a Xenos context, handle the end of the stream "normally."
+    if (!ctx->x360)
     {
-        const char *shstr = ctx->shader_type_str;
-        set_used_register(ctx, REG_TYPE_COLOROUT, 0, 1);
-        output_line(ctx, "%s_oC0 = %s_r0;", shstr, shstr);
-    } // if
-    else if (shader_is_vertex(ctx))
-    {
+        // ps_1_* writes color to r0 instead oC0. We move it to the right place.
+        // We don't have to worry about a RET opcode messing this up, since
+        //  RET isn't available before ps_2_0.
+        if (shader_is_pixel(ctx) && !shader_version_atleast(ctx, 2, 0))
+        {
+            const char *shstr = ctx->shader_type_str;
+            set_used_register(ctx, REG_TYPE_COLOROUT, 0, 1);
+            output_line(ctx, "%s_oC0 = %s_r0;", shstr, shstr);
+        } // if
+        else if (shader_is_vertex(ctx))
+        {
 #ifdef MOJOSHADER_FLIP_RENDERTARGET
-        output_line(ctx, "gl_Position.y = gl_Position.y * vpFlip;");
+            output_line(ctx, "gl_Position.y = gl_Position.y * vpFlip;");
 #endif
 #ifdef MOJOSHADER_DEPTH_CLIPPING
-        output_line(ctx, "gl_Position.z = gl_Position.z * 2.0 - gl_Position.w;");
+            output_line(ctx, "gl_Position.z = gl_Position.z * 2.0 - gl_Position.w;");
 #endif
-    } // else if
+        } // else if
 
-    // force a RET opcode if we're at the end of the stream without one.
-    if (ctx->previous_opcode != OPCODE_RET)
+        // force a RET opcode if we're at the end of the stream without one.
+        if (ctx->previous_opcode != OPCODE_RET)
+            emit_GLSL_RET(ctx);
+
+    } // if
+    else
+    {
+        // Force-emit a return, no matter what came beforehand.
         emit_GLSL_RET(ctx);
+        // We're now definitely at the end of the function.
+        ctx->indent--;
+        output_line(ctx, "}");
+        output_blank_line(ctx);
+        set_output(ctx, &ctx->subroutines);  // !!! FIXME: is this for LABEL? Maybe set it there so we don't allocate unnecessarily.
+    } // else
 } // emit_GLSL_end
 
 static void emit_GLSL_phase(Context *ctx)
@@ -3152,6 +3459,25 @@ static void emit_GLSL_LOOP(Context *ctx)
 
 static void emit_GLSL_RET(Context *ctx)
 {
+    if (ctx->x360)
+    {
+        // RET being at the end of a function isn't a requirement in the
+        // land of Xenos. We thus need to support arbitrary returns from
+        // anywhere in the function.
+        if (shader_is_vertex(ctx))
+        {
+#ifdef MOJOSHADER_FLIP_RENDERTARGET
+            output_line(ctx, "gl_Position.y = gl_Position.y * vpFlip;");
+#endif
+#ifdef MOJOSHADER_DEPTH_CLIPPING
+            output_line(ctx, "gl_Position.z = gl_Position.z * 2.0 - gl_Position.w;");
+#endif
+        } // if
+        output_line(ctx, "return;");
+        output_blank_line(ctx);
+        return;
+    } // if
+
     // thankfully, the MSDN specs say a RET _has_ to end a function...no
     //  early returns. So if you hit one, you know you can safely close
     //  a high-level function.
@@ -8616,6 +8942,7 @@ static const struct { const char *from; const char *to; } profileMap[] =
      PROFILE_EMITTER_METAL(op) \
 }
 
+
 static int parse_destination_token(Context *ctx, DestArgInfo *info)
 {
     // !!! FIXME: recheck against the spec for ranges (like RASTOUT values, etc).
@@ -10249,14 +10576,19 @@ typedef struct
     args_function parse_args;
     state_function state;
     emit_function emitter[STATICARRAYLEN(profiles)];
+    emit_function meta_emitter;
 } Instruction;
 
 #define INSTRUCTION_STATE(op, opstr, slots, a, t) { \
-    opstr, slots, t, parse_args_##a, state_##op, PROFILE_EMITTERS(op) \
+    opstr, slots, t, parse_args_##a, state_##op, PROFILE_EMITTERS(op), NULL \
 },
 
 #define INSTRUCTION(op, opstr, slots, a, t) { \
-    opstr, slots, t, parse_args_##a, 0, PROFILE_EMITTERS(op) \
+    opstr, slots, t, parse_args_##a, 0, PROFILE_EMITTERS(op), NULL \
+},
+
+#define INSTRUCTION_META(op, opstr, slots, a, t) { \
+    opstr, slots, t, parse_args_##a, 0, {}, META_EMITTER(op) \
 },
 
 // These have to be in the right order! This array is indexed by the value
@@ -11214,14 +11546,12 @@ static int parse_xenos(Context *ctx, const char *profilestr)
      * -ade
      */
 
-    // !!! FIXME: Do we actually need this with our "direct" approach? Hook this up to ctx->subroutines?
-    Xenos_Label *labels = NULL;
     // A block of 3 DWORDs contains 2 control flow instructions, 1.5 DWORDs each.
-    // As for actual instructions, ...
+    // "Code" instructions take up a complete block and are handled in EXEC "blocks."
     uint64 instrcodes[2];
-    uint64 instrcode;
     Instruction *instr;
-    uint32 cf_opcode;
+
+    /*
 
     // Jump to beginning of actual code.
     ctx->tokens = ctx->orig_tokens + ctx->x360_code_start;
@@ -11230,50 +11560,54 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     ctx->current_position = 0;
 
     // Preprocessing pass.
-    for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i) {
+    // !!! FIXME: Do we actually need this with our "direct" approach? Hook this up to ctx->subroutines?
+    for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i)
+    {
         instrcodes[0] = uint64(CTXSWAP32(ctx->tokens[0]))       | (uint64(CTXSWAP32(ctx->tokens[1]) & 0xFFFF) << 32);
         instrcodes[1] = uint64(CTXSWAP32(ctx->tokens[1]) >> 16) | (uint64(CTXSWAP32(ctx->tokens[2]) & 0xFFFF) << 16);
 
         // Parse the two instructions.
         for (uint32 subi = 0; subi < 2; subi++) {
-            instrcode = instrcodes[subi];
-            cf_opcode = (instrcode >> 44) & 0xF;
+            ctx->x360_cf_instrcode = instrcodes[subi];
+            ctx->x360_cf_opcode = (ctx->x360_cf_instrcode >> 44) & 0xF;
             
             uint32 target;
 
-            if (cf_opcode == 7 || // LOOPSTART
-                cf_opcode == 8 || // LOOPEND
-                cf_opcode == 9 || // CONDCALL
-                cf_opcode == 11 // CONDJMP
+            if (ctx->x360_cf_opcode == 7 || // LOOPSTART
+                ctx->x360_cf_opcode == 8 || // LOOPEND
+                ctx->x360_cf_opcode == 9 || // CONDCALL
+                ctx->x360_cf_opcode == 11 // CONDJMP
                 ) {
                 // For the above opcodes:
                 // The target address is contained in the first 13 bits of the instruction code.
                 // !!! FIXME: Xenos preprocessing "address" isn't what we expect.
-                target = uint32(instrcode & 0x00001FFF);
+                target = uint32(ctx->x360_cf_instrcode & 0x00001FFF);
             } // if
             else
             {
                 continue;
             } // else
 
-            if (labels == NULL) {
-                labels = (Xenos_Label *) Malloc(ctx, sizeof(Xenos_Label));
-                memset(labels, '\0', sizeof(Xenos_Label));
+            if (ctx->x360_labels == NULL) {
+                ctx->x360_labels = (Xenos_Label *) Malloc(ctx, sizeof(Xenos_Label));
+                memset(ctx->x360_labels, '\0', sizeof(Xenos_Label));
             } // if
             else
             {
-                Xenos_Label *prev = labels;
-                labels = (Xenos_Label *)Malloc(ctx, sizeof(Xenos_Label));
-                memset(labels, '\0', sizeof(Xenos_Label));
-                labels->prev = prev;
+                Xenos_Label *prev = ctx->x360_labels;
+                ctx->x360_labels = (Xenos_Label *)Malloc(ctx, sizeof(Xenos_Label));
+                memset(ctx->x360_labels, '\0', sizeof(Xenos_Label));
+                ctx->x360_labels->prev = prev;
             } // else
 
-            labels->absolute = target;
+            ctx->x360_labels->absolute = target;
 
         } // for
 
         adjust_token_position(ctx, 3);
     } // for
+
+    */
 
 
     // Jump to beginning of actual code... again.
@@ -11287,41 +11621,39 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     if (!ctx->mainfn)
         ctx->mainfn = StrDup(ctx, "main");
 
-    bool returned = false;
-
-    for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i) {
-        instrcodes[0] = uint64(CTXSWAP32(ctx->tokens[0]))       | (uint64(CTXSWAP32(ctx->tokens[1]) & 0xFFFF) << 32);
-        instrcodes[1] = uint64(CTXSWAP32(ctx->tokens[1]) >> 16) | (uint64(CTXSWAP32(ctx->tokens[2]) & 0xFFFF) << 16);
+    for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i)
+    {
+        instrcodes[0] = (uint64(CTXSWAP32(ctx->tokens[0]) & 0xFFFFFFFF))        | (uint64(CTXSWAP32(ctx->tokens[1]) & 0x0000FFFF) << 32);
+        instrcodes[1] = (uint64(CTXSWAP32(ctx->tokens[1]) & 0xFFFF0000) >> 16)  | (uint64(CTXSWAP32(ctx->tokens[2]) & 0xFFFFFFFF) << 16);
 
         // Parse the two instructions.
         for (uint32 subi = 0; subi < 2; subi++) {
-            ctx->x360_current_index = i;
-            ctx->x360_current_subindex = subi;
-            ctx->x360_current_position = 2 * i + subi;
-            instrcode = instrcodes[subi];
-            cf_opcode = (instrcode >> 44) & 0xF;
+            ctx->x360_cf_index = i;
+            ctx->x360_cf_subindex = subi;
+            ctx->x360_cf_position = 2 * i + subi;
+            ctx->x360_cf_instrcode = instrcodes[subi];
+            ctx->x360_cf_opcode = (ctx->x360_cf_instrcode >> 44) & 0xF;
 
-            returned |= cf_opcode == 10; // RET
+            const Instruction *instr = &instructions_x360_cf[ctx->x360_cf_opcode];
+            emit_function emitter = instr->meta_emitter;
+            if (emitter == NULL)
+                emitter = instr->emitter[ctx->profileid];
+            emitter(ctx);
 
-            const Instruction *cf_instr = &instructions_x360_cf[cf_opcode];
-            const emit_function cf_emitter = cf_instr->emitter[ctx->profileid];
-            cf_emitter(ctx); // NOP most of the time.
-            // !!! FIXME: Implement and map control flow emitters.
-
+            // Actual code instructions will be parsed in f.e. emit_META_XENOS_EXEC
         }
 
         adjust_token_position(ctx, 3);
     } // for
 
-    if (!returned) // Is this even possible?
-        ctx->profile->end_emitter(ctx);
+    ctx->profile->end_emitter(ctx);
 
     // Free labels.
-    while (labels != NULL)
+    while (ctx->x360_labels != NULL)
     {
-        Xenos_Label *prev = labels->prev;
-        Free(ctx, labels);
-        labels = prev;
+        Xenos_Label *prev = ctx->x360_labels->prev;
+        Free(ctx, ctx->x360_labels);
+        ctx->x360_labels = prev;
     } // while
 
     return 0;
@@ -11509,6 +11841,12 @@ static void destroy_context(Context *ctx)
         errorlist_destroy(ctx->errors);
         free_symbols(f, d, ctx->ctab.symbols, ctx->ctab.symbol_count);
         MOJOSHADER_freePreshader(ctx->preshader);
+#if SUPPORT_FORMAT_XENOS
+        if (ctx->x360 && ctx->x360_instrdata != NULL)
+        {
+            f(ctx->x360_instrdata, d);
+        } // if
+#endif
         f((void *) ctx->mainfn, d);
         f(ctx, d);
     } // if
