@@ -88,9 +88,7 @@ typedef struct Xenos_Label
 // Helper struct, will be cast to one of the specific structs.
 typedef struct Xenos_Instruction
 {
-    uint32 _0;
-    uint32 _1;
-    uint32 _2;
+    uint32 raw[3];
 } Xenos_Instruction;
 
 // Struct based on Xenia's VertexFetchInstruction.
@@ -303,7 +301,7 @@ typedef struct Context
     uint64 x360_cf_instrcode;
     uint32 x360_cf_opcode;
     uint32 x360_index;
-    Xenos_Instruction *x360_instrdata;
+    uint32 x360_instrdata[3];
     uint32 x360_opcode;
     #endif
 
@@ -1049,14 +1047,162 @@ static void emit_META_NOP(Context *ctx)
     // no-op is a no-op.  :)
 } // emit_META_NOP
 
+// Predeclare the following functions as we can't use Instruction / instructions[].
+static void emit_META__INSTR_EMIT(Context *ctx, uint32 opcode);
+
 #if SUPPORT_FORMAT_XENOS
+
+static void emit_META_XENOS__IF_PRED(Context *ctx, bool condition)
+{
+    // !!! FIXME: Fill ctx->source_args, emit IF
+    // Xenia GLSL source:
+    /*
+    EmitSourceDepth("if (%cp0) {\n", instr.condition ? ' ' : '!');
+    */
+} // emit_META_XENOS__IF_PRED
+
+static void emit_META_XENOS__IF_COND(Context *ctx, bool condition, int index)
+{
+    // !!! FIXME: Fill ctx->instruction_controls, ctx->source_args, emit IFC (comparison, a, b)
+    // Xenia GLSL source:
+    /*
+    EmitSourceDepth("if ((state.bool_consts[%d] & (1 << %d)) %c= 0) {\n",
+    instr.bool_constant_index / 32,
+    instr.bool_constant_index % 32,
+    instr.condition ? '!' : '=');
+    */
+} // emit_META_XENOS__IF_COND
+
+static void emit_META_XENOS__ENDIF(Context *ctx)
+{
+    // Invoke ENDIF emitter.
+    // instructions[OPCODE_ENDIF].emitter[ctx->profileid](ctx);
+} // emit_META_XENOS__ENDIF
 
 static void emit_META_XENOS_TFETCH(Context *ctx)
 {
-    Xenos_Instruction_TFetch *data = (Xenos_Instruction_TFetch *)ctx->x360_instrdata;
-    // const Instruction *instr = &instructions_x360_tfetch[ctx->x360_opcode];
-    // const emit_function emitter = instr->emitter[ctx->profileid];
+    Xenos_Instruction_TFetch *data = (Xenos_Instruction_TFetch *) &(ctx->x360_instrdata);
     // !!! FIXME: Implement Xenos texture fetch instructions
+
+    // Emit TEXLD, LDL, (LDB, LDP) behind the scenes.
+
+    // Default configuration, will be tweaked further down below.
+
+    ctx->coissue = 0;
+    // We handle predicates on our own.
+    ctx->predicated = 0;
+
+    ctx->instruction_controls = CONTROL_TEXLD; // or LDP or LDB
+
+    DestArgInfo *dest = &ctx->dest_arg;
+    SourceArgInfo *src0 = &ctx->source_args[0];
+    SourceArgInfo *src1 = &ctx->source_args[1];
+
+    // Xenos bytecode doesn't contain "standard" tokens.
+    // !!! FIXME: Check if the specified register is dcl_* rN (f.e. dcl_color) and handle specially.
+    dest->token = NULL;
+    dest->regnum = data->dst_reg;
+    dest->relative = data->dst_reg_am;
+    dest->result_mod = 0;
+    dest->result_shift = 0;
+    dest->regtype = REG_TYPE_TEMP;
+
+    // !!! FIXME: Check if the specified register is dcl_texcoord* rN and handle specially.
+    src0->src_mod = SRCMOD_NONE;
+    src0->token = NULL;
+    src0->regnum = data->src_reg;
+    src0->src_mod = SRCMOD_NONE;
+    src0->regtype = REG_TYPE_TEMP;
+    src0->relative = data->src_reg_am;
+    src0->relative_regtype = REG_TYPE_TEMP;
+    src0->relative_regnum = 0;
+    src0->relative_component = 0;
+    src0->relative_array = NULL;
+
+    // We can't call adjust_swizzle here; let's just hope it's already right.
+    src0->swizzle = data->src_swiz;
+    src0->swizzle_x = ((src0->swizzle >> 0) & 0x3);
+    src0->swizzle_y = ((src0->swizzle >> 2) & 0x3);
+    src0->swizzle_z = ((src0->swizzle >> 4) & 0x3);
+    src0->swizzle_w = 0; // Input vec is x, xy or xyz, never xyzw.
+
+    src1->token = NULL;
+    // This regnum seems to be the type _and_ the sampler ID?
+    src1->regnum = TEXTURE_TYPE_2D; // or _CUBE (Cube) or _VOLUME (3D)
+    // src1->regnum = data->const_index;
+    src1->src_mod = SRCMOD_NONE;
+    src1->regtype = REG_TYPE_SAMPLER;
+    src1->relative = 0;
+    src1->relative_regtype = REG_TYPE_TEMP;
+    src1->relative_regnum = 0;
+    src1->relative_component = 0;
+    src1->relative_array = NULL;
+
+    // Convert dst_swiz from 4x3 bits to 4x2 bits.
+    uint32 dst_swiz =
+        (((data->dst_swiz >> 0) & 0x3) << 0) |
+        (((data->dst_swiz >> 3) & 0x3) << 2) |
+        (((data->dst_swiz >> 6) & 0x3) << 4) |
+        (((data->dst_swiz >> 9) & 0x3) << 6);
+    // We can't call adjust_swizzle here; let's just hope it's already right.
+    src1->swizzle = dst_swiz;
+    src1->swizzle_x = ((src1->swizzle >> 0) & 0x3);
+    src1->swizzle_y = ((src1->swizzle >> 2) & 0x3);
+    src1->swizzle_z = ((src1->swizzle >> 4) & 0x3);
+    src1->swizzle_w = ((src1->swizzle >> 6) & 0x3);
+
+    // Set up destination writemask based on 4x3 bit swizzle.
+    dest->orig_writemask =
+        (!((data->dst_swiz >> 0) & 0x4) << 0) |
+        (!((data->dst_swiz >> 3) & 0x4) << 1) |
+        (!((data->dst_swiz >> 6) & 0x4) << 2) |
+        (!((data->dst_swiz >> 9) & 0x4) << 3);
+    set_dstarg_writemask(dest, dest->orig_writemask);
+
+    switch (data->dimension)
+    {
+        case 1:
+            // !!! FIXME: Xenos 1D texture fetches not supported (yet)!
+            break;
+
+        case 2:
+            src1->regnum = TEXTURE_TYPE_2D;
+            break;
+
+        case 3:
+            src1->regnum = TEXTURE_TYPE_VOLUME;
+            break;
+
+        case 4:
+            src1->regnum = TEXTURE_TYPE_CUBE;
+            break;
+
+        default:
+            failf(ctx, "Unknown texture dimension: %u", data->dimension);
+            break;
+    }
+
+    switch (data->opcode_value)
+    {
+        case OPCODE_XENOS_TFETCH:
+            ctx->instruction_controls = CONTROL_TEXLD;
+            break;
+
+        default:
+            // Fail silently.
+            break;
+
+    } // switch
+
+    // !!! FIXME: Remove "lazy Xenos DCL"
+    RegisterList *sreg = reglist_find(&ctx->samplers, REG_TYPE_SAMPLER, src1->regnum);
+    if (sreg == NULL)
+    {
+        add_sampler(ctx, src1->regnum, (TextureType) src1->regnum, 0);
+    } // if
+
+    emit_META__INSTR_EMIT(ctx, OPCODE_TEXLD);
+
 } // emit_META_XENOS_TFETCH
 
 static void emit_META_XENOS_VFETCH(Context *ctx)
@@ -1066,9 +1212,9 @@ static void emit_META_XENOS_VFETCH(Context *ctx)
     // fail(ctx, "VFETCH. Nothing more to be said.");
 } // emit_META_XENOS_VFETCH
 
-static void emit_META_XENOS_EXEC_(Context *ctx, bool cond, bool cond_predicated)
+static void emit_META_XENOS__EXEC(Context *ctx, bool cond, bool cond_predicated)
 {
-    uint32 address = (uint32)       (ctx->x360_cf_instrcode & 0x000000000FFF);
+    uint32 address = (uint32)        (ctx->x360_cf_instrcode & 0x000000000FFF);
     uint32 count = (uint32)         ((ctx->x360_cf_instrcode & 0x000000007000) >> 12);
     // From Xenia: Sequence bits, 2 per instruction, indicating whether ALU or fetch.
     uint32 sequence = (uint32)      ((ctx->x360_cf_instrcode & 0x00000FFF0000) >> 16);
@@ -1082,28 +1228,16 @@ static void emit_META_XENOS_EXEC_(Context *ctx, bool cond, bool cond_predicated)
 
     bool absolute = (bool)          ((ctx->x360_cf_instrcode & 0x080000000000) >> 43);
 
-    if (cond)
+    if (address > ctx->x360_code_length)
     {
-        if (cond_predicated)
-        {
-            // !!! FIXME: Fill ctx->source_args, emit IF
-            // Xenia GLSL source:
-            /*
-            EmitSourceDepth("if (%cp0) {\n", instr.condition ? ' ' : '!');
-            */
-        } // if
-        else
-        {
-            // !!! FIXME: Fill ctx->instruction_controls, ctx->source_args, emit IFC (comparison, a, b)
-            // Xenia GLSL source:
-            /*
-            EmitSourceDepth("if ((state.bool_consts[%d] & (1 << %d)) %c= 0) {\n",
-            instr.bool_constant_index / 32,
-            instr.bool_constant_index % 32,
-            instr.condition ? '!' : '=');
-            */
-        } // else
-    } // if
+        // !!! FIXME: Some Xenos EXECs with too high addresses keep popping up!
+        return;
+    }
+
+    if (cond_predicated)
+        emit_META_XENOS__IF_PRED(ctx, bool_value);
+    else if (cond)
+        emit_META_XENOS__IF_COND(ctx, bool_value, bool_address);
 
     // Temporarily move back to origin.
     uint32 previous_position = ctx->current_position;
@@ -1113,26 +1247,20 @@ static void emit_META_XENOS_EXEC_(Context *ctx, bool cond, bool cond_predicated)
     ctx->current_position = 0;
     adjust_token_position(ctx, address * 3);
 
-    if (ctx->x360_instrdata == NULL)
-    {
-        // We can't create it in build_context and only need it if we ever hit this.
-        ctx->x360_instrdata = (Xenos_Instruction *) Malloc(ctx, sizeof(Xenos_Instruction));
-    } // if
-
     for (uint32 i = 0; i < count; ++i)
     {
         ctx->x360_index = i;
 
-        ctx->x360_instrdata->_0 = CTXSWAP32(ctx->tokens[0]);
-        ctx->x360_instrdata->_1 = CTXSWAP32(ctx->tokens[1]);
-        ctx->x360_instrdata->_2 = CTXSWAP32(ctx->tokens[2]);
+        ctx->x360_instrdata[0] = CTXSWAP32(ctx->tokens[0]);
+        ctx->x360_instrdata[1] = CTXSWAP32(ctx->tokens[1]);
+        ctx->x360_instrdata[2] = CTXSWAP32(ctx->tokens[2]);
 
         // if ((sequence >> (2 * i)) & 0x2) ; // "sync", unused
 
         if ((sequence >> (2 * i)) & 0x1)
         {
             // Fetch instruction    
-            ctx->x360_opcode = ((Xenos_Instruction_TFetch *) ctx->x360_instrdata)->opcode_value;
+            ctx->x360_opcode = ((Xenos_Instruction_TFetch *) &(ctx->x360_instrdata))->opcode_value;
             if (ctx->x360_opcode == 0)
             {
                 emit_META_XENOS_VFETCH(ctx);
@@ -1159,32 +1287,29 @@ static void emit_META_XENOS_EXEC_(Context *ctx, bool cond, bool cond_predicated)
     adjust_token_position(ctx, ctx->current_position);
 
     if (cond)
-    {
-        // Invoke ENDIF emitter.
-        // instructions[OPCODE_ENDIF].emitter[ctx->profileid](ctx);
-    } // if
+        emit_META_XENOS__ENDIF(ctx);
 
 } // emit_META_XENOS_EXEC_
 
 static void emit_META_XENOS_EXEC(Context *ctx)
 {
-    emit_META_XENOS_EXEC_(ctx, false, false);
+    emit_META_XENOS__EXEC(ctx, false, false);
 } // emit_META_XENOS_EXEC
 
 static void emit_META_XENOS_CONDEXEC(Context *ctx)
 {
-    emit_META_XENOS_EXEC_(ctx, true, false);
+    emit_META_XENOS__EXEC(ctx, true, false);
 } // emit_META_XENOS_CONDEXEC
 
 static void emit_META_XENOS_CONDEXECPRED(Context *ctx)
 {
-    emit_META_XENOS_EXEC_(ctx, true, true);
+    emit_META_XENOS__EXEC(ctx, true, true);
 } // emit_META_XENOS_CONDEXECPRED
 
 static void emit_META_XENOS_EXECEND_(Context *ctx, bool cond, bool cond_predicate)
 {
     // "END" doesn't mean what I thought it meant... -ade
-    emit_META_XENOS_EXEC_(ctx, cond, cond_predicate);
+    emit_META_XENOS__EXEC(ctx, cond, cond_predicate);
 } // emit_META_XENOS_EXECEND_
 
 static void emit_META_XENOS_EXECEND(Context *ctx)
@@ -10579,16 +10704,16 @@ typedef struct
     emit_function meta_emitter;
 } Instruction;
 
+#define INSTRUCTION_META(op, opstr, slots, a, t) { \
+    opstr, slots, t, parse_args_##a, 0, PROFILE_EMITTERS(NOP), META_EMITTER(op) \
+},
+
 #define INSTRUCTION_STATE(op, opstr, slots, a, t) { \
     opstr, slots, t, parse_args_##a, state_##op, PROFILE_EMITTERS(op), NULL \
 },
 
 #define INSTRUCTION(op, opstr, slots, a, t) { \
     opstr, slots, t, parse_args_##a, 0, PROFILE_EMITTERS(op), NULL \
-},
-
-#define INSTRUCTION_META(op, opstr, slots, a, t) { \
-    opstr, slots, t, parse_args_##a, 0, {}, META_EMITTER(op) \
 },
 
 // These have to be in the right order! This array is indexed by the value
@@ -10618,6 +10743,16 @@ static const Instruction instructions_x360_cf[] =
 #undef INSTRUCTION
 #undef INSTRUCTION_STATE
 
+// Helper as we can't access Instruction / instruction[] early.
+static void emit_META__INSTR_EMIT(Context *ctx, uint32 opcode)
+{
+    const Instruction *instr = &instructions[opcode];
+    emit_function emitter = instr->meta_emitter;
+    if (emitter == NULL)
+        emitter = instr->emitter[ctx->profileid];
+    emitter(ctx);
+} // emit_META__INSTR_EMIT
+
 
 // parse various token types...
 
@@ -10638,7 +10773,9 @@ static int parse_instruction_token(Context *ctx)
         return 0;  // not an instruction token, or just not handled here.
 
     const Instruction *instruction = &instructions[opcode];
-    const emit_function emitter = instruction->emitter[ctx->profileid];
+    emit_function emitter = instruction->meta_emitter;
+    if (emitter == NULL)
+        emitter = instruction->emitter[ctx->profileid];
 
     if ((token & 0x80000000) != 0)
         fail(ctx, "instruction token high bit must be zero.");  // so says msdn.
@@ -11528,7 +11665,8 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     ctx->x360_code_start = CTXSWAP32(header[1]) / 4;
     ctx->x360_code_length = CTXSWAP32(header[2]) / 4;
 
-    // We (currently) don't care about any other metadata.
+    // We (currently) don't care about any other metadata...
+    // !!! FIXME: Parse DCLs in Xenos shader "header" and remove "lazy DCLs"
 
     /* The following code is heavily influenced by the information 
      * gathered from analyzing Xenia's shader translator.
@@ -11841,12 +11979,6 @@ static void destroy_context(Context *ctx)
         errorlist_destroy(ctx->errors);
         free_symbols(f, d, ctx->ctab.symbols, ctx->ctab.symbol_count);
         MOJOSHADER_freePreshader(ctx->preshader);
-#if SUPPORT_FORMAT_XENOS
-        if (ctx->x360 && ctx->x360_instrdata != NULL)
-        {
-            f(ctx->x360_instrdata, d);
-        } // if
-#endif
         f((void *) ctx->mainfn, d);
         f(ctx, d);
     } // if

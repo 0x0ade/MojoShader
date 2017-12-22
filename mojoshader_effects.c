@@ -988,7 +988,7 @@ MOJOSHADER_effect *MOJOSHADER_parseEffect(const char *profile,
         goto parseEffect_outOfMemory;
     strcpy((char *) retval->profile, profile);
 
-    /*/
+    /**/
     printf("Effect = 0x%08X\n", retval);
     printf("retval->object_count = %i\n", retval->object_count);
     for (int i = 0; i < retval->object_count && se; i++) {
