@@ -11632,7 +11632,7 @@ static int parse_xenos(Context *ctx, const char *profilestr)
      * Rest: Combination of register using declarations and other config data.
      */
 
-    const uint* header = ctx->tokens;
+    const uint32* header = ctx->tokens;
     const uint32 magic = CTXSWAP32(header[0]);
 
     // 0x00 == pixel shader, 0x01 == vertex shader
@@ -11662,11 +11662,230 @@ static int parse_xenos(Context *ctx, const char *profilestr)
         return -1;
     } // if
 
+    ctx->know_shader_size = true;
+
     ctx->x360_code_start = CTXSWAP32(header[1]) / 4;
     ctx->x360_code_length = CTXSWAP32(header[2]) / 4;
 
+    ctx->profile->start_emitter(ctx, profilestr);
+    if (!ctx->mainfn)
+        ctx->mainfn = StrDup(ctx, "main");
+
     // We (currently) don't care about any other metadata...
     // !!! FIXME: Parse DCLs in Xenos shader "header" and remove "lazy DCLs"
+
+    // First 8 dwords: ?
+    
+    // Jump to beginning of header "code."
+    ctx->tokens += 11;
+    // Sync token count to X360 code length for safety.
+    ctx->tokencount = ctx->x360_code_start - (ctx->tokens - ctx->orig_tokens);
+    ctx->current_position = 0;
+
+    while (ctx->tokencount > 0)
+    {
+        if (CTXSWAP32(*(ctx->tokens)) == 0x00000000)
+        {
+            // NOP? Padding?
+            adjust_token_position(ctx, 1);
+            continue;
+        } // if
+
+        if (CTXSWAP32(*(ctx->tokens)) & 0x10000000)
+        {
+            // Seen variations:
+            // 0x1000XXXX
+            // 0x1802XXXX
+            // Possible meaning: config PsMaxReg=N, f.e. 0x10001F00: N = 0x1F. Not needed.
+            adjust_token_position(ctx, 1);
+            continue;
+        } // if
+
+        if (CTXSWAP32(*(ctx->tokens)) & 0x00000001)
+        {
+            // XNA- or effect-specific data?
+            // Seen variations:
+            // PS   0x0000005B (00000000000000000000000001011011)
+            // VS   0x00000109 (00000000000000000000000100001001)
+            // PS   0x00000023 (00000000000000000000000000100011)
+            // VS   0x000000E9 (00000000000000000000000011101001)
+            adjust_token_position(ctx, 1);
+            
+            // Our usual version token.
+            // We don't need to parse it anymore.
+            adjust_token_position(ctx, 1);
+
+            /* ????
+            S = Same
+            Shader 1 (PS), 3 (PS):
+            00000001
+            0000001C
+            00000004 S
+            00000054 < Possible "size" candidate.
+            00000030
+            00030000
+            00010000 S
+            00000044 < Possible "size" candidate, but in this case only.
+            00000000
+            54657874 < String.
+            ...
+
+            Shader 2 (VS), 4 (VS):
+            00000004
+            0000001C
+            00000004 S
+            00000102 < Isn't a size here, or if it is, it's unaligned.
+            0000006C
+            00020008
+            00010000 S
+            00000078 < Growing value A, growing by 0x10 x 3.
+            00000088
+            00000098
+            00020009 < 0002????
+            00010000 < ????0000
+            00000078
+            ...      < String comes later.
+
+            Shader 5 (PS):
+            00000000
+            00000000
+            00000004 S
+            0000001C < Possible "size" candidate.
+            70735F33 < String.
+            ...
+
+            Shader 6 (VS):
+            00000003
+            0000001C
+            00000004 S
+            000000E2 < Isn't a size here, or if it is, it's unaligned.
+            00000058
+            00020008
+            00010000 S
+            00000060 < Growing value A, growing by 0x10 x 3.
+            00000070
+            00000080
+            00020004 < 0002????
+            00040000 < ????0000
+            0000008C
+            ...      < String comes later.
+            */
+
+            // Skip first 3 unknown DWORDs.
+            adjust_token_position(ctx, 3);
+
+            const uint32 size = CTXSWAP32(*(ctx->tokens));
+            adjust_token_position(ctx, 1);
+            if (size % 4)
+            {
+                // Misaligned? Jump out of the loop ASAP.
+                break;
+            } // if
+
+            // Assuming # of bytes containing data we don't care about.
+            // This _sometimes_ (PS?) places us at config PsMaxReg.
+            // Meanwhile, it also _sometimes_ (VS?) places us in the middle of a DWORD.
+            adjust_token_position(ctx, size / 4);
+            continue;
+        } // if
+
+        if (CTXSWAP32(*(ctx->tokens)) & 0x0000000C)
+        {
+            // Seen variations:
+            // Manual   0x00000004 (00000000000000000000000000000100)
+            // Game     0x00000008 (00000000000000000000000000001000)
+
+            // Assuming DCL.
+            adjust_token_position(ctx, 1);
+
+            // Always 0?
+            adjust_token_position(ctx, 1);
+
+            /*
+             * x/y/z/w: 0x00000421
+             * xy:      0x00000821
+             * xyz:     0x00000C21
+             * xyzw:    0x00001021
+             * x x:     0x00000842
+             * xy x:    0x00000C42
+             * x xy:    0x00000C42
+             * ...
+             */
+            adjust_token_position(ctx, 1);
+
+            // Two words.
+            // 1 for 1, 3 for 2, 7 for 3, ...
+            // First word either the same (most common) or < second word.
+            // Register usage mask?
+            // Let's abuse it as the number of DCLs.
+            const uint32 count = ((CTXSWAP32(*(ctx->tokens)) & 0x0000FFFF) + 1) >> 1;
+            adjust_token_position(ctx, 1);
+
+            // ???; Seen values:
+            // 0x00000000
+            // 0x00000001
+            // 0x00000011
+            adjust_token_position(ctx, 1);
+
+            // Actual usages.
+            for (uint32 i = 0; i < count; i++)
+            {
+                // 4 bytes (DWORD) each:
+                // 00? 00? SWIZZLE|INDEX USAGE
+
+                // USAGE seems to match the usual usages, see usagestrs.
+
+                // Examples:
+                // dcl_texcoord0 r0.xy  00 00  30 50
+                // dcl_color r1(.xyzw)  00 00  F1 A0
+
+                // Swizzles:
+                // x 10
+                // y 20
+                // z 40
+                // w 80
+
+                // PsMaxReg can be 31, but r15 is the max DCLable reg.
+
+                const uint32 token = CTXSWAP32(*(ctx->tokens));
+
+                SourceArgInfo *info = &ctx->source_args[0]; // Temporary.
+
+                // Xenos bytecode doesn't contain "standard" tokens.
+                info->token = NULL;
+                info->regnum = (token & 0x00000F00) >> 8;
+                info->relative = 0;
+                const uint32 swizzle = (token & 0x0000F000) >> 12;
+                info->src_mod = SRCMOD_NONE; // bits 24 through 27
+                info->regtype = REG_TYPE_TEMP; // !!! FIXME: Xenos DCL regtype always TEMP!
+                const uint32 usage = (token & 0x000000FF) >> 0;
+
+                // Convert swizzle from 4 bits to 4x2 bits.
+                info->swizzle =
+                    (((swizzle >> 0) & 0x1) ? (0 << 0) : 0) |
+                    (((swizzle >> 1) & 0x1) ? (1 << 2) : 0) |
+                    (((swizzle >> 2) & 0x1) ? (2 << 4) : 0) |
+                    (((swizzle >> 3) & 0x1) ? (3 << 6) : 0);
+                // We can't call adjust_swizzle here; let's just hope it's already right.
+                info->swizzle_x = ((info->swizzle >> 0) & 0x3);
+                info->swizzle_y = ((info->swizzle >> 2) & 0x3);
+                info->swizzle_z = ((info->swizzle >> 4) & 0x3);
+                info->swizzle_w = ((info->swizzle >> 6) & 0x3);
+
+                RegisterList *reg;
+                reg = set_used_register(ctx, info->regtype, info->regnum, 0);
+                if (!reg)
+                    failf(ctx, "Setting temp register r%d failed", info->regnum);
+
+                adjust_token_position(ctx, 1);
+            } // for
+
+            continue;
+        } // if
+
+        // !!! FIXME: What about other Xenos shader "header" data? Preshaders?
+        adjust_token_position(ctx, 1);
+    } // for
 
     /* The following code is heavily influenced by the information 
      * gathered from analyzing Xenia's shader translator.
@@ -11755,10 +11974,6 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     ctx->current_position = 0;
 
     // Actual translation pass.
-    ctx->profile->start_emitter(ctx, profilestr);
-    if (!ctx->mainfn)
-        ctx->mainfn = StrDup(ctx, "main");
-
     for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i)
     {
         instrcodes[0] = (uint64(CTXSWAP32(ctx->tokens[0]) & 0xFFFFFFFF))        | (uint64(CTXSWAP32(ctx->tokens[1]) & 0x0000FFFF) << 32);
