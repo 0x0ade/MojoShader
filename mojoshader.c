@@ -11666,6 +11666,21 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     ctx->x360_code_start = CTXSWAP32(header[1]) / 4;
     ctx->x360_code_length = CTXSWAP32(header[2]) / 4;
 
+    // Dumping helper, writing the last (attempted to parse) shader to shader.bin
+    /**/
+    printf("Type: %s\n", ctx->shader_type_str);
+    printf("Size: 0x%08X + 0x%08X = 0x%08X\n", ctx->x360_code_start * 4, ctx->x360_code_length * 4, ctx->x360_code_start * 4 + ctx->x360_code_length * 4);
+
+    FILE *out = fopen("shader.bin", "wb");
+    if (out != NULL)
+    {
+        fwrite(ctx->tokens, ctx->x360_code_start * 4 + ctx->x360_code_length * 4, 1, out);
+        fclose(out);
+    }
+
+    printf("Written.\n");
+    /**/
+
     ctx->profile->start_emitter(ctx, profilestr);
     if (!ctx->mainfn)
         ctx->mainfn = StrDup(ctx, "main");
@@ -11690,6 +11705,24 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             continue;
         } // if
 
+        if (CTXSWAP32(*(ctx->tokens)) == 0x00000001 && ctx->tokencount == 1)
+        {
+            // 0x00000001 sometimes at the end of the "header", but why?
+            break;
+        } // if
+
+        if (CTXSWAP32(*(ctx->tokens)) == 0x00000014)
+        {
+            // ???
+            // Let's just skip this. Hopefully this fixes more than it breaks...
+            adjust_token_position(ctx, 1);
+
+            // Is it even always the same size?
+            adjust_token_position(ctx, 7);
+
+            continue;
+        } // if
+
         if (CTXSWAP32(*(ctx->tokens)) & 0x10000000)
         {
             // Seen variations:
@@ -11700,7 +11733,7 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             continue;
         } // if
 
-        if (CTXSWAP32(*(ctx->tokens)) & 0x00000001)
+        if (CTXSWAP32(*(ctx->tokens)) & 0x00000003)
         {
             // XNA- or effect-specific data?
             // Seen variations:
@@ -11708,6 +11741,8 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             // VS   0x00000109 (00000000000000000000000100001001)
             // PS   0x00000023 (00000000000000000000000000100011)
             // VS   0x000000E9 (00000000000000000000000011101001)
+            // PS   0x000000C2 (00000000000000000000000011000010)
+            // VS   0x00000097 (00000000000000000000000010010111)
             adjust_token_position(ctx, 1);
             
             // Our usual version token.
@@ -11717,7 +11752,7 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             /* ????
             S = Same
             Shader 1 (PS), 3 (PS):
-            00000001
+            00000001 < String count?
             0000001C
             00000004 S
             00000054 < Possible "size" candidate.
@@ -11770,8 +11805,20 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             ...      < String comes later.
             */
 
-            // Skip first 3 unknown DWORDs.
-            adjust_token_position(ctx, 3);
+            uint32 stringtype = CTXSWAP32(*(ctx->tokens));
+            // String count (excluding version string) in PS, ??? in VS.
+            adjust_token_position(ctx, 1);
+
+            // Skip 2 unknown DWORDs.
+            adjust_token_position(ctx, 2);
+
+            if (ctx->shader_type == MOJOSHADER_TYPE_VERTEX)
+            {
+                // I don't know what's going on here in vertex shaders.
+                // This _should_ be something being a size, but it isn't.
+                // !!! FIXME: Study Xenos vertex shader header data. -ade
+                break;
+            } // if
 
             const uint32 size = CTXSWAP32(*(ctx->tokens));
             adjust_token_position(ctx, 1);
@@ -11817,7 +11864,11 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             // First word either the same (most common) or < second word.
             // Register usage mask?
             // Let's abuse it as the number of DCLs.
-            const uint32 count = ((CTXSWAP32(*(ctx->tokens)) & 0x0000FFFF) + 1) >> 1;
+            uint32 count = 0;
+            for (uint32 mask = CTXSWAP32(*(ctx->tokens)) & 0x0000FFFF; mask; count++)
+            {
+                mask &= (mask - 1);
+            } // for
             adjust_token_position(ctx, 1);
 
             // ???; Seen values:
@@ -11854,18 +11905,19 @@ static int parse_xenos(Context *ctx, const char *profilestr)
                 info->token = NULL;
                 info->regnum = (token & 0x00000F00) >> 8;
                 info->relative = 0;
-                const uint32 swizzle = (token & 0x0000F000) >> 12;
-                info->src_mod = SRCMOD_NONE; // bits 24 through 27
+                const uint32 readmask = (token & 0x0000F000) >> 12;
+                info->src_mod = SRCMOD_NONE;
                 info->regtype = REG_TYPE_TEMP;
                 const uint32 usage = (token & 0x000000F0) >> 4;
                 const uint32 usage_index = (token & 0x0000000F) >> 0;
 
-                // Convert swizzle from 4 bits to 4x2 bits.
+                // Convert swizzle from 4 bit "readmask" to 4x2 bits.
+                // This is inaccurate as anything untouched will be mapped to x.
                 info->swizzle =
-                    (((swizzle >> 0) & 0x1) ? (0 << 0) : 0) |
-                    (((swizzle >> 1) & 0x1) ? (1 << 2) : 0) |
-                    (((swizzle >> 2) & 0x1) ? (2 << 4) : 0) |
-                    (((swizzle >> 3) & 0x1) ? (3 << 6) : 0);
+                    (((readmask >> 0) & 0x1) ? (0 << 0) : 0) |
+                    (((readmask >> 1) & 0x1) ? (1 << 2) : 0) |
+                    (((readmask >> 2) & 0x1) ? (2 << 4) : 0) |
+                    (((readmask >> 3) & 0x1) ? (3 << 6) : 0);
                 // We can't call adjust_swizzle here; let's just hope it's already right.
                 info->swizzle_x = ((info->swizzle >> 0) & 0x3);
                 info->swizzle_y = ((info->swizzle >> 2) & 0x3);
@@ -11882,8 +11934,8 @@ static int parse_xenos(Context *ctx, const char *profilestr)
                         add_attribute_register(ctx, info->regtype, info->regnum,
                             MOJOSHADER_USAGE_TEXCOORD, usage_index, 0xF, 0);
 
-                        // Set up r0 and Copy from t0 to r0, as games can write back to r0.
-
+                        // Set up r0 and copy from t0 to r0, as games can write back to r0.
+                        // info is already the source arg.
                         dest = &ctx->dest_arg;
 
                         // Xenos bytecode doesn't contain "standard" tokens.
@@ -11894,11 +11946,10 @@ static int parse_xenos(Context *ctx, const char *profilestr)
                         dest->result_shift = 0;
                         dest->regtype = REG_TYPE_TEMP;
 
-                        dest->orig_writemask = 0xF;
+                        dest->orig_writemask = readmask;
                         set_dstarg_writemask(dest, dest->orig_writemask);
 
                         emit_META__INSTR_EMIT(ctx, OPCODE_MOV);
-
                         break;
 
                     case MOJOSHADER_USAGE_COLOR:
