@@ -1008,11 +1008,11 @@ MOJOSHADER_effect *MOJOSHADER_parseEffect(const char *profile,
                 for (int ei = 0; ei < object->shader.shader->error_count; ei++) {
                     printf("Error %i: %s\n", ei, object->shader.shader->errors[ei].error);
                 }
+                printf("\n");
             } // if
             else
             {
                 printf("profile: %s\n", object->shader.shader->profile);
-                printf("output: %s\n", object->shader.shader->output);
                 printf("instruction_count: %i\n", object->shader.shader->instruction_count);
                 printf("shader_type: %i\n", object->shader.shader->shader_type);
                 printf("major_ver: %i\n", object->shader.shader->major_ver);
@@ -1025,6 +1025,7 @@ MOJOSHADER_effect *MOJOSHADER_parseEffect(const char *profile,
                 printf("output_count: %i\n", object->shader.shader->output_count);
                 printf("swizzle_count: %i\n", object->shader.shader->swizzle_count);
                 printf("symbol_count: %i\n", object->shader.shader->symbol_count);
+                printf("output: %s\n", object->shader.shader->output);
             } // else
         } // if
     } // for

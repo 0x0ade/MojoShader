@@ -1193,11 +1193,18 @@ static void emit_META_XENOS_TFETCH(Context *ctx)
 
     } // switch
 
-    // !!! FIXME: Remove "lazy Xenos DCL"
+    // Declare source if missing.
     RegisterList *sreg = reglist_find(&ctx->samplers, REG_TYPE_SAMPLER, src1->regnum);
     if (sreg == NULL)
     {
         add_sampler(ctx, src1->regnum, (TextureType) src1->regnum, 0);
+    } // if
+
+    // Declare destination if missing.
+    RegisterList *dreg = reglist_find(&ctx->used_registers, REG_TYPE_TEMP, dest->regnum);
+    if (dreg == NULL)
+    {
+        dreg = set_used_register(ctx, dest->regtype, dest->regnum, 0);
     } // if
 
     emit_META__INSTR_EMIT(ctx, OPCODE_TEXLD);
@@ -11625,14 +11632,19 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     ctx->x360 = 1;
 
     /* Header format:
+     * Preheader:
      * uint32: magic + shader type
      * uint32: code starting offset in bytes
      * uint32: code length in bytes
-     * Rest: Combination of register using declarations and other config data.
+     *
+     * Header chunk posiitions?:
+     * 8 DWORDs seemingly specifying offsets.
+     *
+     * Header chunks, including register DCL data.
      */
 
-    const uint32* header = ctx->tokens;
-    const uint32 magic = CTXSWAP32(header[0]);
+    const uint32* preheader = ctx->tokens;
+    const uint32 magic = CTXSWAP32(preheader[0]);
 
     // 0x00 == pixel shader, 0x01 == vertex shader
     if ((magic & 0xFF) == 0x00)
@@ -11663,11 +11675,11 @@ static int parse_xenos(Context *ctx, const char *profilestr)
 
     ctx->know_shader_size = true;
 
-    ctx->x360_code_start = CTXSWAP32(header[1]) / 4;
-    ctx->x360_code_length = CTXSWAP32(header[2]) / 4;
+    ctx->x360_code_start = CTXSWAP32(preheader[1]) / 4;
+    ctx->x360_code_length = CTXSWAP32(preheader[2]) / 4;
 
     // Dumping helper, writing the last (attempted to parse) shader to shader.bin
-    /**/
+    /*/
     printf("Type: %s\n", ctx->shader_type_str);
     printf("Size: 0x%08X + 0x%08X = 0x%08X\n", ctx->x360_code_start * 4, ctx->x360_code_length * 4, ctx->x360_code_start * 4 + ctx->x360_code_length * 4);
 
@@ -11686,160 +11698,41 @@ static int parse_xenos(Context *ctx, const char *profilestr)
         ctx->mainfn = StrDup(ctx, "main");
 
     // We (currently) don't care about any other metadata...
-    // !!! FIXME: Parse DCLs in Xenos shader "header" and remove "lazy DCLs"
 
-    // First 8 dwords: ?
-    
-    // Jump to beginning of header "code."
-    ctx->tokens += 11;
-    // Sync token count to X360 code length for safety.
-    ctx->tokencount = ctx->x360_code_start - (ctx->tokens - ctx->orig_tokens);
-    ctx->current_position = 0;
+    ctx->tokens += 3;
 
-    while (ctx->tokencount > 0)
-    {
-        if (CTXSWAP32(*(ctx->tokens)) == 0x00000000)
-        {
-            // NOP? Padding?
-            adjust_token_position(ctx, 1);
-            continue;
-        } // if
+    const uint32* header = ctx->tokens;
 
-        if (CTXSWAP32(*(ctx->tokens)) == 0x00000001 && ctx->tokencount == 1)
-        {
-            // 0x00000001 sometimes at the end of the "header", but why?
-            break;
-        } // if
+    // First 8 DWORDs: ???
 
-        if (CTXSWAP32(*(ctx->tokens)) == 0x00000014)
-        {
-            // ???
-            // Let's just skip this. Hopefully this fixes more than it breaks...
-            adjust_token_position(ctx, 1);
+    // 4th DWORD seems to be position of DCL chunk?
+    // It at least brings us quite close to what we want.
+    if (CTXSWAP32(header[3])) {
+        ctx->tokens += CTXSWAP32(header[3]) / 4 - 1;
+        // - 1 because we want to catch PsMaxReg / VsMaxReg (?) right before DCL.
 
-            // Is it even always the same size?
-            adjust_token_position(ctx, 7);
+        // Sync token count to X360 code length for safety.
+        ctx->tokencount = ctx->x360_code_start - (ctx->tokens - ctx->orig_tokens);
+        ctx->current_position = 0;
 
-            continue;
-        } // if
-
-        if (CTXSWAP32(*(ctx->tokens)) & 0x10000000)
+        uint32 maxreg = 0;
+        if (CTXSWAP32(*(ctx->tokens)) & 0x30000000)
         {
             // Seen variations:
             // 0x1000XXXX
             // 0x1802XXXX
-            // Possible meaning: config PsMaxReg=N, f.e. 0x10001F00: N = 0x1F. Not needed.
-            adjust_token_position(ctx, 1);
-            continue;
+            // 0x2000XXXX
+            // Possible meaning: config PsMaxReg=N / VsMaxReg=N, f.e. 0x10001F00: N = 0x1F.
+            maxreg = (CTXSWAP32(*(ctx->tokens)) & 0x0000FF00) > 8;
+            // Currently unused.
         } // if
-
-        if (CTXSWAP32(*(ctx->tokens)) & 0x00000003)
-        {
-            // XNA- or effect-specific data?
-            // Seen variations:
-            // PS   0x0000005B (00000000000000000000000001011011)
-            // VS   0x00000109 (00000000000000000000000100001001)
-            // PS   0x00000023 (00000000000000000000000000100011)
-            // VS   0x000000E9 (00000000000000000000000011101001)
-            // PS   0x000000C2 (00000000000000000000000011000010)
-            // VS   0x00000097 (00000000000000000000000010010111)
-            adjust_token_position(ctx, 1);
-            
-            // Our usual version token.
-            // We don't need to parse it anymore.
-            adjust_token_position(ctx, 1);
-
-            /* ????
-            S = Same
-            Shader 1 (PS), 3 (PS):
-            00000001 < String count?
-            0000001C
-            00000004 S
-            00000054 < Possible "size" candidate.
-            00000030
-            00030000
-            00010000 S
-            00000044 < Possible "size" candidate, but in this case only.
-            00000000
-            54657874 < String.
-            ...
-
-            Shader 2 (VS), 4 (VS):
-            00000004
-            0000001C
-            00000004 S
-            00000102 < Isn't a size here, or if it is, it's unaligned.
-            0000006C
-            00020008
-            00010000 S
-            00000078 < Growing value A, growing by 0x10 x 3.
-            00000088
-            00000098
-            00020009 < 0002????
-            00010000 < ????0000
-            00000078
-            ...      < String comes later.
-
-            Shader 5 (PS):
-            00000000
-            00000000
-            00000004 S
-            0000001C < Possible "size" candidate.
-            70735F33 < String.
-            ...
-
-            Shader 6 (VS):
-            00000003
-            0000001C
-            00000004 S
-            000000E2 < Isn't a size here, or if it is, it's unaligned.
-            00000058
-            00020008
-            00010000 S
-            00000060 < Growing value A, growing by 0x10 x 3.
-            00000070
-            00000080
-            00020004 < 0002????
-            00040000 < ????0000
-            0000008C
-            ...      < String comes later.
-            */
-
-            uint32 stringtype = CTXSWAP32(*(ctx->tokens));
-            // String count (excluding version string) in PS, ??? in VS.
-            adjust_token_position(ctx, 1);
-
-            // Skip 2 unknown DWORDs.
-            adjust_token_position(ctx, 2);
-
-            if (ctx->shader_type == MOJOSHADER_TYPE_VERTEX)
-            {
-                // I don't know what's going on here in vertex shaders.
-                // This _should_ be something being a size, but it isn't.
-                // !!! FIXME: Study Xenos vertex shader header data. -ade
-                break;
-            } // if
-
-            const uint32 size = CTXSWAP32(*(ctx->tokens));
-            adjust_token_position(ctx, 1);
-            if (size % 4)
-            {
-                // Misaligned? Jump out of the loop ASAP.
-                break;
-            } // if
-
-            // Assuming # of bytes containing data we don't care about.
-            // This _sometimes_ (PS?) places us at config PsMaxReg.
-            // Meanwhile, it also _sometimes_ (VS?) places us in the middle of a DWORD.
-            adjust_token_position(ctx, size / 4);
-            continue;
-        } // if
+        adjust_token_position(ctx, 1);
 
         if (CTXSWAP32(*(ctx->tokens)) & 0x0000000C)
         {
             // Seen variations:
-            // Manual   0x00000004 (00000000000000000000000000000100)
-            // Game     0x00000008 (00000000000000000000000000001000)
+            // 0x00000004 (00000000000000000000000000000100)
+            // 0x00000008 (00000000000000000000000000001000)
 
             // Assuming DCL.
             adjust_token_position(ctx, 1);
@@ -11848,15 +11741,15 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             adjust_token_position(ctx, 1);
 
             /*
-             * x/y/z/w: 0x00000421
-             * xy:      0x00000821
-             * xyz:     0x00000C21
-             * xyzw:    0x00001021
-             * x x:     0x00000842
-             * xy x:    0x00000C42
-             * x xy:    0x00000C42
-             * ...
-             */
+            * x/y/z/w: 0x00000421
+            * xy:      0x00000821
+            * xyz:     0x00000C21
+            * xyzw:    0x00001021
+            * x x:     0x00000842
+            * xy x:    0x00000C42
+            * x xy:    0x00000C42
+            * ...
+            */
             adjust_token_position(ctx, 1);
 
             // Two words.
@@ -11901,7 +11794,7 @@ static int parse_xenos(Context *ctx, const char *profilestr)
 
                 SourceArgInfo *info = &ctx->source_args[0]; // Temporary.
 
-                // Xenos bytecode doesn't contain "standard" tokens.
+                                                            // Xenos bytecode doesn't contain "standard" tokens.
                 info->token = NULL;
                 info->regnum = (token & 0x00000F00) >> 8;
                 info->relative = 0;
@@ -11924,65 +11817,77 @@ static int parse_xenos(Context *ctx, const char *profilestr)
                 info->swizzle_z = ((info->swizzle >> 4) & 0x3);
                 info->swizzle_w = ((info->swizzle >> 6) & 0x3);
 
-                DestArgInfo *dest = NULL;
+                bool attrib = false;
 
                 // !!! FIXME: What about all other Xenos DCL usages?
                 switch (usage)
                 {
-                    case MOJOSHADER_USAGE_TEXCOORD:
-                        info->regtype = REG_TYPE_TEXTURE;
-                        add_attribute_register(ctx, info->regtype, info->regnum,
-                            MOJOSHADER_USAGE_TEXCOORD, usage_index, 0xF, 0);
+                case MOJOSHADER_USAGE_TEXCOORD:
+                    info->regtype = REG_TYPE_TEXTURE;
+                    attrib = true;
+                    break;
 
-                        // Set up r0 and copy from t0 to r0, as games can write back to r0.
-                        // info is already the source arg.
-                        dest = &ctx->dest_arg;
+                case MOJOSHADER_USAGE_COLOR:
+                    info->regtype = REG_TYPE_COLOROUT; // Not REG_TYPE_OUTPUT?
+                                                        // Assuming output.
+                    break;
 
-                        // Xenos bytecode doesn't contain "standard" tokens.
-                        dest->token = NULL;
-                        dest->regnum = info->regnum;
-                        dest->relative = info->relative;
-                        dest->result_mod = 0;
-                        dest->result_shift = 0;
-                        dest->regtype = REG_TYPE_TEMP;
 
-                        dest->orig_writemask = readmask;
-                        set_dstarg_writemask(dest, dest->orig_writemask);
+                case MOJOSHADER_USAGE_POSITION:
+                case MOJOSHADER_USAGE_FOG:
+                case MOJOSHADER_USAGE_POINTSIZE:
+                    info->regtype = REG_TYPE_OUTPUT;
+                    attrib = true;
+                    break;
 
-                        emit_META__INSTR_EMIT(ctx, OPCODE_MOV);
-                        break;
-
-                    case MOJOSHADER_USAGE_COLOR:
-                        // Assuming dcl_color means "output."
-                        info->regtype = REG_TYPE_COLOROUT;
-                        break;
-
-                    default:
-                        failf(ctx, "Unknown Xenos shader DCL usage: %u, %u", usage, usage_index);
+                default:
+                    failf(ctx, "Unknown Xenos shader DCL usage %u index %u", usage, usage_index);
                 }
 
-                RegisterList *reg;
-                reg = set_used_register(ctx, info->regtype, info->regnum, 0);
-                if (!reg)
-                    failf(ctx, "Setting Xenos register r%d failed", info->regnum);
-
-                if (dest)
+                if (attrib)
                 {
+                    add_attribute_register(ctx, info->regtype, info->regnum,
+                        (MOJOSHADER_usage)usage, usage_index, 0xF, 0); // !!! FIXME: Set Xenos attrib writemask and flags!
+                    set_defined_register(ctx, info->regtype, info->regnum);
+
+                    // Set up rN and copy from tN to rN, as games can write back to rN.
+                    // info is already the source arg.
+                    DestArgInfo *dest = &ctx->dest_arg;
+
+                    // Xenos bytecode doesn't contain "standard" tokens.
+                    dest->token = NULL;
+                    dest->regnum = info->regnum;
+                    dest->relative = info->relative;
+                    dest->result_mod = 0;
+                    dest->result_shift = 0;
+                    dest->regtype = REG_TYPE_TEMP;
+
+                    dest->orig_writemask = readmask;
+                    set_dstarg_writemask(dest, dest->orig_writemask);
+
                     RegisterList *regDest;
                     regDest = set_used_register(ctx, dest->regtype, dest->regnum, 0);
                     if (!regDest)
                         failf(ctx, "Setting Xenos temporary register r%d failed", dest->regnum);
+
+                    emit_META__INSTR_EMIT(ctx, OPCODE_MOV);
+
                 } // if
+                else
+                {
+                    RegisterList *reg;
+                    reg = set_used_register(ctx, info->regtype, info->regnum, 0);
+                    if (!reg)
+                        failf(ctx, "Setting Xenos register r%d failed", info->regnum);
+                } // else
+
 
                 adjust_token_position(ctx, 1);
             } // for
 
-            continue;
         } // if
 
-        // !!! FIXME: What about other Xenos shader "header" data? Preshaders?
-        adjust_token_position(ctx, 1);
-    } // for
+    } // if
 
     /* The following code is heavily influenced by the information 
      * gathered from analyzing Xenia's shader translator.
