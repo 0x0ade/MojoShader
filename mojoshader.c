@@ -294,7 +294,6 @@ typedef struct Context
     #if SUPPORT_FORMAT_XENOS
     uint32 x360_code_start;
     uint32 x360_code_length;
-    Xenos_Label *x360_labels;
     uint32 x360_cf_index;
     uint32 x360_cf_subindex;
     uint32 x360_cf_position;
@@ -11857,8 +11856,9 @@ static int parse_xenos(Context *ctx, const char *profilestr)
                 info->relative = 0;
                 const uint32 swizzle = (token & 0x0000F000) >> 12;
                 info->src_mod = SRCMOD_NONE; // bits 24 through 27
-                info->regtype = REG_TYPE_TEMP; // !!! FIXME: Xenos DCL regtype always TEMP!
-                const uint32 usage = (token & 0x000000FF) >> 0;
+                info->regtype = REG_TYPE_TEMP;
+                const uint32 usage = (token & 0x000000F0) >> 4;
+                const uint32 usage_index = (token & 0x0000000F) >> 0;
 
                 // Convert swizzle from 4 bits to 4x2 bits.
                 info->swizzle =
@@ -11872,10 +11872,56 @@ static int parse_xenos(Context *ctx, const char *profilestr)
                 info->swizzle_z = ((info->swizzle >> 4) & 0x3);
                 info->swizzle_w = ((info->swizzle >> 6) & 0x3);
 
+                DestArgInfo *dest = NULL;
+
+                // !!! FIXME: What about all other Xenos DCL usages?
+                switch (usage)
+                {
+                    case MOJOSHADER_USAGE_TEXCOORD:
+                        info->regtype = REG_TYPE_TEXTURE;
+                        add_attribute_register(ctx, info->regtype, info->regnum,
+                            MOJOSHADER_USAGE_TEXCOORD, usage_index, 0xF, 0);
+
+                        // Set up r0 and Copy from t0 to r0, as games can write back to r0.
+
+                        dest = &ctx->dest_arg;
+
+                        // Xenos bytecode doesn't contain "standard" tokens.
+                        dest->token = NULL;
+                        dest->regnum = info->regnum;
+                        dest->relative = info->relative;
+                        dest->result_mod = 0;
+                        dest->result_shift = 0;
+                        dest->regtype = REG_TYPE_TEMP;
+
+                        dest->orig_writemask = 0xF;
+                        set_dstarg_writemask(dest, dest->orig_writemask);
+
+                        emit_META__INSTR_EMIT(ctx, OPCODE_MOV);
+
+                        break;
+
+                    case MOJOSHADER_USAGE_COLOR:
+                        // Assuming dcl_color means "output."
+                        info->regtype = REG_TYPE_COLOROUT;
+                        break;
+
+                    default:
+                        failf(ctx, "Unknown Xenos shader DCL usage: %u, %u", usage, usage_index);
+                }
+
                 RegisterList *reg;
                 reg = set_used_register(ctx, info->regtype, info->regnum, 0);
                 if (!reg)
-                    failf(ctx, "Setting temp register r%d failed", info->regnum);
+                    failf(ctx, "Setting Xenos register r%d failed", info->regnum);
+
+                if (dest)
+                {
+                    RegisterList *regDest;
+                    regDest = set_used_register(ctx, dest->regtype, dest->regnum, 0);
+                    if (!regDest)
+                        failf(ctx, "Setting Xenos temporary register r%d failed", dest->regnum);
+                } // if
 
                 adjust_token_position(ctx, 1);
             } // for
@@ -11908,66 +11954,7 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     uint64 instrcodes[2];
     Instruction *instr;
 
-    /*
-
     // Jump to beginning of actual code.
-    ctx->tokens = ctx->orig_tokens + ctx->x360_code_start;
-    // Sync token count to X360 code length for safety.
-    ctx->tokencount = ctx->x360_code_length;
-    ctx->current_position = 0;
-
-    // Preprocessing pass.
-    // !!! FIXME: Do we actually need this with our "direct" approach? Hook this up to ctx->subroutines?
-    for (uint32 i = 0; i < ctx->x360_code_length / 3; ++i)
-    {
-        instrcodes[0] = uint64(CTXSWAP32(ctx->tokens[0]))       | (uint64(CTXSWAP32(ctx->tokens[1]) & 0xFFFF) << 32);
-        instrcodes[1] = uint64(CTXSWAP32(ctx->tokens[1]) >> 16) | (uint64(CTXSWAP32(ctx->tokens[2]) & 0xFFFF) << 16);
-
-        // Parse the two instructions.
-        for (uint32 subi = 0; subi < 2; subi++) {
-            ctx->x360_cf_instrcode = instrcodes[subi];
-            ctx->x360_cf_opcode = (ctx->x360_cf_instrcode >> 44) & 0xF;
-            
-            uint32 target;
-
-            if (ctx->x360_cf_opcode == 7 || // LOOPSTART
-                ctx->x360_cf_opcode == 8 || // LOOPEND
-                ctx->x360_cf_opcode == 9 || // CONDCALL
-                ctx->x360_cf_opcode == 11 // CONDJMP
-                ) {
-                // For the above opcodes:
-                // The target address is contained in the first 13 bits of the instruction code.
-                // !!! FIXME: Xenos preprocessing "address" isn't what we expect.
-                target = uint32(ctx->x360_cf_instrcode & 0x00001FFF);
-            } // if
-            else
-            {
-                continue;
-            } // else
-
-            if (ctx->x360_labels == NULL) {
-                ctx->x360_labels = (Xenos_Label *) Malloc(ctx, sizeof(Xenos_Label));
-                memset(ctx->x360_labels, '\0', sizeof(Xenos_Label));
-            } // if
-            else
-            {
-                Xenos_Label *prev = ctx->x360_labels;
-                ctx->x360_labels = (Xenos_Label *)Malloc(ctx, sizeof(Xenos_Label));
-                memset(ctx->x360_labels, '\0', sizeof(Xenos_Label));
-                ctx->x360_labels->prev = prev;
-            } // else
-
-            ctx->x360_labels->absolute = target;
-
-        } // for
-
-        adjust_token_position(ctx, 3);
-    } // for
-
-    */
-
-
-    // Jump to beginning of actual code... again.
     ctx->tokens = ctx->orig_tokens + ctx->x360_code_start;
     // Sync token count to X360 code length for safety.
     ctx->tokencount = ctx->x360_code_length;
@@ -12000,14 +11987,6 @@ static int parse_xenos(Context *ctx, const char *profilestr)
     } // for
 
     ctx->profile->end_emitter(ctx);
-
-    // Free labels.
-    while (ctx->x360_labels != NULL)
-    {
-        Xenos_Label *prev = ctx->x360_labels->prev;
-        Free(ctx, ctx->x360_labels);
-        ctx->x360_labels = prev;
-    } // while
 
     return 0;
 }
