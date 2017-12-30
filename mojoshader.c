@@ -298,10 +298,15 @@ typedef struct Context
     uint32 x360_cf_subindex;
     uint32 x360_cf_position;
     uint64 x360_cf_instrcode;
-    uint32 x360_cf_opcode;
     uint32 x360_index;
-    uint32 x360_instrdata[3];
-    uint32 x360_opcode;
+    union Instrdata {
+        uint32 dwords[3];
+        Xenos_Instruction_TFetch tfetch;
+        Xenos_Instruction_VFetch vfetch;
+        Xenos_Instruction_Alu alu;
+    } x360_instrdata;
+    MOJOSHADER_usage x360_usage;
+    RegisterType x360_regtype;
     #endif
 
     int have_preshader;
@@ -1051,6 +1056,9 @@ static void emit_META__INSTR_EMIT(Context *ctx, uint32 opcode);
 
 #if SUPPORT_FORMAT_XENOS
 
+static void emit_META_XENOS__INSTR_ALUV_EMIT(Context *ctx, uint32 opcode);
+static void emit_META_XENOS__INSTR_ALUS_EMIT(Context *ctx, uint32 opcode);
+
 static void emit_META_XENOS__IF_PRED(Context *ctx, bool condition)
 {
     // !!! FIXME: Fill ctx->source_args, emit IF
@@ -1080,7 +1088,7 @@ static void emit_META_XENOS__ENDIF(Context *ctx)
 
 static void emit_META_XENOS_TFETCH(Context *ctx)
 {
-    Xenos_Instruction_TFetch *data = (Xenos_Instruction_TFetch *) &(ctx->x360_instrdata);
+    Xenos_Instruction_TFetch *data = &ctx->x360_instrdata.tfetch;
     // !!! FIXME: Implement Xenos texture fetch instructions
 
     // Emit TEXLD, LDL, (LDB, LDP) behind the scenes.
@@ -1098,7 +1106,6 @@ static void emit_META_XENOS_TFETCH(Context *ctx)
     SourceArgInfo *src1 = &ctx->source_args[1];
 
     // Xenos bytecode doesn't contain "standard" tokens.
-    // !!! FIXME: Check if the specified register is dcl_* rN (f.e. dcl_color) and handle specially.
     dest->token = NULL;
     dest->regnum = data->dst_reg;
     dest->relative = data->dst_reg_am;
@@ -1106,7 +1113,6 @@ static void emit_META_XENOS_TFETCH(Context *ctx)
     dest->result_shift = 0;
     dest->regtype = REG_TYPE_TEMP;
 
-    // !!! FIXME: Check if the specified register is dcl_texcoord* rN and handle specially.
     src0->src_mod = SRCMOD_NONE;
     src0->token = NULL;
     src0->regnum = data->src_reg;
@@ -1193,19 +1199,16 @@ static void emit_META_XENOS_TFETCH(Context *ctx)
 
     } // switch
 
-    // Declare source if missing.
-    RegisterList *sreg = reglist_find(&ctx->samplers, REG_TYPE_SAMPLER, src1->regnum);
-    if (sreg == NULL)
-    {
-        add_sampler(ctx, src1->regnum, (TextureType) src1->regnum, 0);
-    } // if
+    // Declare registers if missing.
 
-    // Declare destination if missing.
-    RegisterList *dreg = reglist_find(&ctx->used_registers, REG_TYPE_TEMP, dest->regnum);
-    if (dreg == NULL)
-    {
-        dreg = set_used_register(ctx, dest->regtype, dest->regnum, 0);
-    } // if
+    if (!reglist_find(&ctx->used_registers, REG_TYPE_TEMP, src0->regnum))
+        set_used_register(ctx, src0->regtype, src0->regnum, 0);
+
+    if (!reglist_find(&ctx->samplers, REG_TYPE_SAMPLER, src1->regnum))
+        add_sampler(ctx, src1->regnum, (TextureType) src1->regnum, 0);
+
+    if (!reglist_find(&ctx->used_registers, REG_TYPE_TEMP, dest->regnum))
+        set_used_register(ctx, dest->regtype, dest->regnum, 0);
 
     emit_META__INSTR_EMIT(ctx, OPCODE_TEXLD);
 
@@ -1217,6 +1220,100 @@ static void emit_META_XENOS_VFETCH(Context *ctx)
     // !!! FIXME: Implement Xenos VFETCH... ha, ha...
     // fail(ctx, "VFETCH. Nothing more to be said.");
 } // emit_META_XENOS_VFETCH
+
+static void emit_META_XENOS_MUL(Context *ctx)
+{
+    Xenos_Instruction_Alu *data = &ctx->x360_instrdata.alu;
+
+    // Emit MUL behind the scenes.
+
+    // Default configuration, will be tweaked further down below.
+
+    ctx->coissue = 0;
+    // We handle predicates on our own.
+    ctx->predicated = 0;
+
+    ctx->instruction_controls = 0;
+
+    DestArgInfo *dest = &ctx->dest_arg;
+    SourceArgInfo *src0 = &ctx->source_args[0];
+    SourceArgInfo *src1 = &ctx->source_args[1];
+
+    // Xenos bytecode doesn't contain "standard" tokens.
+    dest->token = NULL;
+    dest->regnum = data->vector_dest;
+    dest->relative = data->vector_dest_rel;
+    dest->result_mod = 0;
+    dest->result_shift = 0;
+    dest->regtype = ctx->x360_regtype;
+
+    src0->src_mod = SRCMOD_NONE;
+    src0->token = NULL;
+    src0->regnum = data->src1_reg;
+    src0->src_mod = SRCMOD_NONE;
+    src0->regtype = REG_TYPE_TEMP;
+    src0->relative = 0;
+    src0->relative_regtype = REG_TYPE_TEMP;
+    src0->relative_regnum = 0;
+    src0->relative_component = 0;
+    src0->relative_array = NULL;
+
+    // We can't call adjust_swizzle here; let's just hope it's already right.
+    src0->swizzle = data->src1_swiz;
+    src0->swizzle_x = (((src0->swizzle >> 0) + 0) & 0x3);
+    src0->swizzle_y = (((src0->swizzle >> 2) + 1) & 0x3);
+    src0->swizzle_z = (((src0->swizzle >> 4) + 2) & 0x3);
+    src0->swizzle_w = (((src0->swizzle >> 6) + 3) & 0x3);
+    src0->swizzle =
+        (src0->swizzle_x << 0) |
+        (src0->swizzle_y << 2) |
+        (src0->swizzle_z << 4) |
+        (src0->swizzle_w << 6);
+
+    src1->src_mod = SRCMOD_NONE;
+    src1->token = NULL;
+    src1->regnum = data->src2_reg;
+    src1->src_mod = SRCMOD_NONE;
+    src1->regtype = REG_TYPE_TEMP;
+    src1->relative = 0;
+    src1->relative_regtype = REG_TYPE_TEMP;
+    src1->relative_regnum = 0;
+    src1->relative_component = 0;
+    src1->relative_array = NULL;
+
+    // We can't call adjust_swizzle here; let's just hope it's already right.
+    src1->swizzle = data->src2_swiz;
+    src1->swizzle_x = (((src1->swizzle >> 0) + 0) & 0x3);
+    src1->swizzle_y = (((src1->swizzle >> 2) + 1) & 0x3);
+    src1->swizzle_z = (((src1->swizzle >> 4) + 2) & 0x3);
+    src1->swizzle_w = (((src1->swizzle >> 6) + 3) & 0x3);
+    src1->swizzle =
+        (src1->swizzle_x << 0) |
+        (src1->swizzle_y << 2) |
+        (src1->swizzle_z << 4) |
+        (src1->swizzle_w << 6);
+
+    dest->orig_writemask = data->vector_write_mask;
+    set_dstarg_writemask(dest, dest->orig_writemask);
+
+    // Declare registers if missing.
+
+    if (!reglist_find(&ctx->used_registers, REG_TYPE_TEMP, src0->regnum))
+        set_used_register(ctx, src0->regtype, src0->regnum, 0);
+
+    if (!reglist_find(&ctx->samplers, REG_TYPE_TEMP, src1->regnum))
+        set_used_register(ctx, src1->regtype, src1->regnum, 0);
+
+    // !!! FIXME: Lazy DCL non-temp mul destinations
+    if ((dest->regtype == REG_TYPE_COLOROUT || dest->regtype == REG_TYPE_OUTPUT) && !reglist_find(&ctx->attributes, dest->regtype, dest->regnum))
+        add_attribute_register(ctx, dest->regtype, dest->regnum, ctx->x360_usage, 0, 0xF, 0);
+    else if (!reglist_find(&ctx->used_registers, dest->regtype, dest->regnum))
+        set_used_register(ctx, dest->regtype, dest->regnum, 0);
+
+    emit_META__INSTR_EMIT(ctx, OPCODE_MUL);
+
+} // emit_META_XENOS_MUL
+
 
 static void emit_META_XENOS__EXEC(Context *ctx, bool cond, bool cond_predicated)
 {
@@ -1257,17 +1354,16 @@ static void emit_META_XENOS__EXEC(Context *ctx, bool cond, bool cond_predicated)
     {
         ctx->x360_index = i;
 
-        ctx->x360_instrdata[0] = CTXSWAP32(ctx->tokens[0]);
-        ctx->x360_instrdata[1] = CTXSWAP32(ctx->tokens[1]);
-        ctx->x360_instrdata[2] = CTXSWAP32(ctx->tokens[2]);
+        ctx->x360_instrdata.dwords[0] = CTXSWAP32(ctx->tokens[0]);
+        ctx->x360_instrdata.dwords[1] = CTXSWAP32(ctx->tokens[1]);
+        ctx->x360_instrdata.dwords[2] = CTXSWAP32(ctx->tokens[2]);
 
         // if ((sequence >> (2 * i)) & 0x2) ; // "sync", unused
 
         if ((sequence >> (2 * i)) & 0x1)
         {
             // Fetch instruction    
-            ctx->x360_opcode = ((Xenos_Instruction_TFetch *) &(ctx->x360_instrdata))->opcode_value;
-            if (ctx->x360_opcode == 0)
+            if (ctx->x360_instrdata.tfetch.opcode_value == 0)
             {
                 emit_META_XENOS_VFETCH(ctx);
             } // if
@@ -1279,7 +1375,93 @@ static void emit_META_XENOS__EXEC(Context *ctx, bool cond, bool cond_predicated)
         else
         {
             // ALU instruction
-            // !!! FIXME: Implement Xenos ALU instructions
+            Xenos_Instruction_Alu *data = &ctx->x360_instrdata.alu;
+
+            const bool has_vector = data->vector_write_mask || data->export_data == 1;
+            const bool has_scalar = data->scalar_opc != 50 /*RetainPrev*/ || (data->export_data != 1 && data->scalar_write_mask);
+
+            // According to Xenia, export info is only gathered if has_vector.
+            ctx->x360_usage = MOJOSHADER_USAGE_UNKNOWN;
+            ctx->x360_regtype = REG_TYPE_TEMP;
+
+            if (has_vector)
+            {
+                // Vector instruction
+                
+                if (data->export_data == 1)
+                {
+                    // Destination registers > 31 are export registers.
+                    switch (data->vector_dest)
+                    {
+                        case 32:
+                        case 33:
+                        case 34:
+                        case 35:
+                        case 36:
+                        case 37:
+                            // According to Xenia, those are memexport registers.
+                            // Luckily, memexport is unusable in XNA titles...
+                            break;
+
+                        case 61:
+                            if (ctx->shader_type == MOJOSHADER_TYPE_PIXEL)
+                            {
+                                ctx->x360_usage = MOJOSHADER_USAGE_DEPTH;
+                                ctx->x360_regtype = REG_TYPE_OUTPUT;
+                            } // if
+                            else
+                            {
+                                fail(ctx, "Exporting depth not supported in vertex shaders");
+                            } // else
+                            break;
+
+                        case 62:
+                            if (ctx->shader_type == MOJOSHADER_TYPE_VERTEX)
+                            {
+                                ctx->x360_usage = MOJOSHADER_USAGE_POSITION;
+                                ctx->x360_regtype = REG_TYPE_OUTPUT;
+                            } // if
+                            else
+                            {
+                                fail(ctx, "Exporting position not supported in pixel shaders");
+                            } // else
+                            break;
+
+                        case 63:
+                            if (ctx->shader_type == MOJOSHADER_TYPE_VERTEX)
+                            {
+                                ctx->x360_usage = MOJOSHADER_USAGE_POINTSIZE;
+                                ctx->x360_regtype = REG_TYPE_OUTPUT;
+                                break;
+                            } // if
+                            // else fall through to default.
+
+                        default:
+                            if (ctx->shader_type == MOJOSHADER_TYPE_VERTEX && data->vector_dest < 16)
+                            {
+                                // !!! FIXME: Support Xenos "interpolants"
+                            } // if
+                            else if (ctx->shader_type == MOJOSHADER_TYPE_PIXEL && (data->vector_dest < 4 || data->vector_dest == 63))
+                            {
+                                ctx->x360_usage = MOJOSHADER_USAGE_COLOR;
+                                ctx->x360_regtype = REG_TYPE_COLOROUT;
+                            } // else if
+                            else
+                            {
+                                failf(ctx, "Unsupported Xenos ALU export destination %u", data->vector_dest);
+                            } // else
+                    }
+                } // if
+
+                emit_META_XENOS__INSTR_ALUV_EMIT(ctx, data->vector_opc);
+            } // if
+
+            if (has_scalar)
+            {
+                // Scalar instruction
+                emit_META_XENOS__INSTR_ALUS_EMIT(ctx, data->scalar_opc);
+            } // if
+
         } // else
 
         adjust_token_position(ctx, 3);
@@ -10734,8 +10916,6 @@ static const Instruction instructions[] =
 };
 
 #if SUPPORT_FORMAT_XENOS
-// These have to be in the right order! This array is indexed by the value
-//  of the instruction token.
 static const Instruction instructions_x360_cf[] =
 {
 
@@ -10744,12 +10924,30 @@ static const Instruction instructions_x360_cf[] =
     #undef MOJOSHADER_DO_INSTRUCTION_X360_CF_TABLE
 
 };
+
+static const Instruction instructions_x360_aluv[] =
+{
+
+    #define MOJOSHADER_DO_INSTRUCTION_X360_ALUV_TABLE 1
+    #include "mojoshader_internal.h"
+    #undef MOJOSHADER_DO_INSTRUCTION_X360_ALUV_TABLE
+
+};
+
+static const Instruction instructions_x360_alus[] =
+{
+
+    #define MOJOSHADER_DO_INSTRUCTION_X360_ALUS_TABLE 1
+    #include "mojoshader_internal.h"
+    #undef MOJOSHADER_DO_INSTRUCTION_X360_ALUS_TABLE
+
+};
 #endif
 
 #undef INSTRUCTION
 #undef INSTRUCTION_STATE
 
-// Helper as we can't access Instruction / instruction[] early.
+// Helpers as we can't access Instruction / instruction[] early.
 static void emit_META__INSTR_EMIT(Context *ctx, uint32 opcode)
 {
     const Instruction *instr = &instructions[opcode];
@@ -10758,6 +10956,40 @@ static void emit_META__INSTR_EMIT(Context *ctx, uint32 opcode)
         emitter = instr->emitter[ctx->profileid];
     emitter(ctx);
 } // emit_META__INSTR_EMIT
+
+#if SUPPORT_FORMAT_XENOS
+
+static void emit_META_XENOS__INSTR_ALUV_EMIT(Context *ctx, uint32 opcode)
+{
+    if (opcode > STATICARRAYLEN(instructions_x360_aluv))
+    {
+        // Unsupported opcode.
+        // failf(ctx, "Unsupported Xenos ALU vector opcode %u", opcode);
+        return;
+    }
+    const Instruction *instr = &instructions_x360_aluv[opcode];
+    emit_function emitter = instr->meta_emitter;
+    if (emitter == NULL)
+        emitter = instr->emitter[ctx->profileid];
+    emitter(ctx);
+} // emit_META_XENOS__INSTR_ALUV_EMIT
+
+static void emit_META_XENOS__INSTR_ALUS_EMIT(Context *ctx, uint32 opcode)
+{
+    if (opcode > STATICARRAYLEN(instructions_x360_alus))
+    {
+        // Unsupported opcode.
+        // failf(ctx, "Unsupported Xenos ALU scalar opcode %u", opcode);
+        return;
+    }
+    const Instruction *instr = &instructions_x360_alus[opcode];
+    emit_function emitter = instr->meta_emitter;
+    if (emitter == NULL)
+        emitter = instr->emitter[ctx->profileid];
+    emitter(ctx);
+} // emit_META_XENOS__INSTR_ALUS_EMIT
+
+#endif
 
 
 // parse various token types...
@@ -11794,7 +12026,7 @@ static int parse_xenos(Context *ctx, const char *profilestr)
 
                 SourceArgInfo *info = &ctx->source_args[0]; // Temporary.
 
-                                                            // Xenos bytecode doesn't contain "standard" tokens.
+                // Xenos bytecode doesn't contain "standard" tokens.
                 info->token = NULL;
                 info->regnum = (token & 0x00000F00) >> 8;
                 info->relative = 0;
@@ -11820,29 +12052,30 @@ static int parse_xenos(Context *ctx, const char *profilestr)
                 bool attrib = false;
 
                 // !!! FIXME: What about all other Xenos DCL usages?
+                bool vs = ctx->shader_type == MOJOSHADER_TYPE_VERTEX;
                 switch (usage)
                 {
-                case MOJOSHADER_USAGE_TEXCOORD:
-                    info->regtype = REG_TYPE_TEXTURE;
-                    attrib = true;
-                    break;
+                    case MOJOSHADER_USAGE_TEXCOORD:
+                        info->regtype = REG_TYPE_TEXTURE;
+                        attrib = true;
+                        break;
 
-                case MOJOSHADER_USAGE_COLOR:
-                    info->regtype = REG_TYPE_COLOROUT; // Not REG_TYPE_OUTPUT?
-                                                        // Assuming output.
-                    break;
+                    case MOJOSHADER_USAGE_COLOR:
+                        info->regtype = vs ? REG_TYPE_OUTPUT : REG_TYPE_INPUT;
+                        attrib = true;
+                        break;
 
 
-                case MOJOSHADER_USAGE_POSITION:
-                case MOJOSHADER_USAGE_FOG:
-                case MOJOSHADER_USAGE_POINTSIZE:
-                    info->regtype = REG_TYPE_OUTPUT;
-                    attrib = true;
-                    break;
+                    case MOJOSHADER_USAGE_POSITION:
+                    case MOJOSHADER_USAGE_FOG:
+                    case MOJOSHADER_USAGE_POINTSIZE:
+                        info->regtype = vs ? REG_TYPE_OUTPUT : REG_TYPE_INPUT;
+                        attrib = true;
+                        break;
 
-                default:
-                    failf(ctx, "Unknown Xenos shader DCL usage %u index %u", usage, usage_index);
-                }
+                    default:
+                        failf(ctx, "Unknown Xenos shader DCL usage %u index %u", usage, usage_index);
+                } // switch
 
                 if (attrib)
                 {
@@ -11928,9 +12161,9 @@ static int parse_xenos(Context *ctx, const char *profilestr)
             ctx->x360_cf_subindex = subi;
             ctx->x360_cf_position = 2 * i + subi;
             ctx->x360_cf_instrcode = instrcodes[subi];
-            ctx->x360_cf_opcode = (ctx->x360_cf_instrcode >> 44) & 0xF;
+            const uint32 opcode = (ctx->x360_cf_instrcode >> 44) & 0xF;
 
-            const Instruction *instr = &instructions_x360_cf[ctx->x360_cf_opcode];
+            const Instruction *instr = &instructions_x360_cf[opcode];
             emit_function emitter = instr->meta_emitter;
             if (emitter == NULL)
                 emitter = instr->emitter[ctx->profileid];
