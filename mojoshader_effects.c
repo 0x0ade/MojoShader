@@ -262,7 +262,7 @@ static void readvalue(const uint8 *base,
                       MOJOSHADER_malloc m,
                       void *d)
 {
-    int i, j, k;
+    int i, j, k, l;
     const uint8 *typeptr = base + typeoffset;
     const uint8 *valptr = base + valoffset;
     unsigned int typelen = 9999999;  // !!! FIXME
@@ -303,8 +303,23 @@ static void readvalue(const uint8 *base,
         value->values = m(siz, d);
         memset(value->values, '\0', siz);
         siz /= 16;
-        for (i = 0; i < siz; i++)
-            memcpy(value->valuesF + (i << 2), valptr + ((columncount << 2) * i), columncount << 2); // !!! FIXME: What about opposite-endian data? -ade
+
+        if (!se)
+        {
+            for (i = 0; i < siz; i++)
+                memcpy(value->valuesF + (i << 2), valptr + ((columncount << 2) * i), columncount << 2);
+        } // if
+        else
+        {
+            // Blindly swap endianness.
+            for (i = 0; i < siz; i++)
+            {
+                const uint8 *colptr = valptr + ((columncount << 2) * i);
+                uint32 collen = columncount << 2;
+                for (j = 0; collen > 0; j++)
+                    *((uint32 *)(value->valuesF + (i << 2) + (j << 2))) = readui32(&colptr, &collen, true);
+            } // for
+        } // else if
     } // if
     else if (valclass == MOJOSHADER_SYMCLASS_OBJECT)
     {
@@ -420,9 +435,21 @@ static void readvalue(const uint8 *base,
                 siz = value->type.members[j].info.rows * value->type.members[j].info.elements;
                 for (k = 0; k < siz; k++)
                 {
-                    memcpy(value->valuesF + dst_offset,
-                           typeptr + src_offset, /* Yes, typeptr. -flibit */
-                           value->type.members[j].info.columns << 2); // !!! FIXME: What about opposite-endian data? -ade
+                    if (!se)
+                    {
+                        memcpy(value->valuesF + dst_offset,
+                            typeptr + src_offset, /* Yes, typeptr. -flibit */
+                            value->type.members[j].info.columns << 2);
+                    } // if
+                    else
+                    {
+                        // Blindly swap endianness.
+                        const uint8 *colptr = typeptr + src_offset;
+                        uint32 collen = value->type.members[j].info.columns << 2;
+                        for (l = 0; collen > 0; l++)
+                            *((uint32 *)(value->valuesF + dst_offset + (l << 2))) = readui32(&colptr, &collen, true);
+                    } // else if
+
                     dst_offset += 4;
                     src_offset += value->type.members[j].info.columns << 2;
                 } // for
