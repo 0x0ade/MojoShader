@@ -317,7 +317,7 @@ static void readvalue(const uint8 *base,
                 const uint8 *colptr = valptr + ((columncount << 2) * i);
                 uint32 collen = columncount << 2;
                 for (j = 0; collen > 0; j++)
-                    *((uint32 *)(value->valuesF + (i << 2) + (j << 2))) = readui32(&colptr, &collen, true);
+                    *((uint32 *)(value->valuesF + (i << 2) + j)) = readui32(&colptr, &collen, true);
             } // for
         } // else if
     } // if
@@ -447,7 +447,7 @@ static void readvalue(const uint8 *base,
                         const uint8 *colptr = typeptr + src_offset;
                         uint32 collen = value->type.members[j].info.columns << 2;
                         for (l = 0; collen > 0; l++)
-                            *((uint32 *)(value->valuesF + dst_offset + (l << 2))) = readui32(&colptr, &collen, true);
+                            *((uint32 *)(value->valuesF + dst_offset + l)) = readui32(&colptr, &collen, true);
                     } // else if
 
                     dst_offset += 4;
