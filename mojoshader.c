@@ -82,7 +82,7 @@ typedef struct CtabData
 typedef struct Xenos_Label
 {
     uint32 absolute;
-    Xenos_Label *prev; // linked lists ftw.
+    struct Xenos_Label *prev; // linked lists ftw.
 } Xenos_Label;
 
 // Helper struct, will be cast to one of the specific structs.

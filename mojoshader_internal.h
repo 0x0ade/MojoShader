@@ -14,6 +14,10 @@
 #include <stdarg.h>
 #include <assert.h>
 
+#ifndef MSVC
+#include <stdbool.h>
+#endif
+
 #include "mojoshader.h"
 
 #define DEBUG_LEXER 0
@@ -83,7 +87,7 @@
 // Likewise, if SUPPORT_FORMAT_* isn't defined, we assume an implicit desire to support.
 // Note that the "default" format is always supported and that format support is a horrible mess.
 
-#ifndef SUPPORT_FORMAT_X360
+#ifndef SUPPORT_FORMAT_XENOS
 #define SUPPORT_FORMAT_XENOS 1
 #endif
 

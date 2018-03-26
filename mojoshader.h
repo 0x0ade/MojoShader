@@ -2676,7 +2676,8 @@ DECLSPEC MOJOSHADER_glShader *MOJOSHADER_glCompileShader(const unsigned char *to
                                                          const MOJOSHADER_swizzle *swiz,
                                                          const unsigned int swizcount,
                                                          const MOJOSHADER_samplerMap *smap,
-                                                         const unsigned int smapcount);
+                                                         const unsigned int smapcount,
+												         const bool se);
 
 
 /*
